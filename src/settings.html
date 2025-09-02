@@ -1,0 +1,184 @@
+<style>
+  .local_emotes a {
+    color: var(--text-link);
+  }
+  .local_emotes input {
+    align-self: normal;
+    flex: 1;
+    border-radius: 4px;
+    margin-right: 12px;
+    padding: 2px 4px;
+    transition: all 100ms ease-out;
+  }
+  .local_emotes input:focus {
+    padding-left: 4px;
+    background-color: var(--overlay_active);
+  }
+  .local_emotes .input-group {
+    display: flex;
+    flex-direction: row;
+    margin-top: 8px;
+  }
+  .local_emotes .ops-btns > *:not(:last-child) {
+    margin-right: 4px;
+  }
+  /* 设置列表项宽度最大，而不是靠文本撑 */
+  .local_emotes setting-item > div {
+    width: 100%;
+  }
+  /* 浅色模式 */
+  @media (prefers-color-scheme: light) {
+    .local_emotes input { color: black; }
+  }
+  /* 深色模式 */
+  @media (prefers-color-scheme: dark) {
+    .local_emotes input { color: white; }
+  }
+</style>
+
+<div class="local_emotes">
+  <setting-section data-title="常规">
+    <setting-panel>
+      <setting-list data-direction="column">
+        <setting-item data-direction="column">
+          <div>
+            <setting-text>本地表情目录</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+              选择一个包含图片的文件夹作为表情库，插件会读取其中的表情文件进行预览与发送
+            </setting-text>
+            <div class="input-group">
+              <input class="le-dir-input" type="text" spellcheck="false" readonly>
+              <div class="ops-btns">
+                <setting-button data-type="secondary" class="le-dir-choose">选择目录</setting-button>
+                <setting-button data-type="secondary" class="le-dir-open">打开数据目录</setting-button>
+              </div>
+            </div>
+          </div>
+        </setting-item>
+
+        <setting-item data-direction="row">
+          <div>
+            <setting-text>调试日志</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+              开启后，会在控制台输出调试信息，便于排查问题
+            </setting-text>
+          </div>
+          <setting-switch id="le-debug"></setting-switch>
+        </setting-item>
+
+        <setting-item data-direction="row">
+          <div>
+            <setting-text>显示文件名</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+              开启后，卡片下方会显示文件名（最长 6 个字）
+            </setting-text>
+          </div>
+          <setting-switch id="le-show-filename"></setting-switch>
+        </setting-item>
+
+        <setting-item data-direction="row">
+          <div>
+            <setting-text>发送模式</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+              选择表情的发送方式：表情包多发（粘贴插入，可一次连续插入多张）、图片发送（以图片消息发送单张表情包）、标准表情（使用原生表情包机制）
+            </setting-text>
+          </div>
+          <div class="ops-btns le-send-mode">
+            <setting-button data-type="secondary" id="le-send-mode-multi">表情包多发</setting-button>
+            <setting-button data-type="secondary" id="le-send-mode-single">图片发送</setting-button>
+            <setting-button data-type="secondary" id="le-send-mode-native">标准表情</setting-button>
+          </div>
+        </setting-item>
+
+        <setting-item data-direction="column">
+          <div>
+            <setting-text>打开/关闭面板快捷键</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+              示例：Alt+E、Ctrl+Shift+E
+            </setting-text>
+            <div class="input-group">
+              <input class="le-hotkey-input" type="text" spellcheck="false">
+              <div class="ops-btns">
+                <setting-button data-type="secondary" class="le-hotkey-reset">恢复默认</setting-button>
+                <setting-button data-type="secondary" class="le-hotkey-apply">立即应用</setting-button>
+              </div>
+            </div>
+          </div>
+        </setting-item>
+
+        <setting-item data-direction="column">
+          <div>
+            <setting-text>网格列数</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+              设置面板每行显示的表情个数（2-12）
+            </setting-text>
+            <div class="input-group">
+              <input class="le-grid-cols" type="number" min="2" max="12">
+              <div class="ops-btns">
+                <setting-button data-type="secondary" class="le-grid-cols-apply">立即应用</setting-button>
+              </div>
+            </div>
+          </div>
+        </setting-item>
+      </setting-list>
+    </setting-panel>
+  </setting-section>
+
+  <setting-section data-title="最近与固定">
+    <setting-panel>
+      <setting-list data-direction="column">
+        <setting-item data-direction="row">
+          <div>
+            <setting-text>清空最近使用</setting-text>
+            <setting-text data-type="secondary">清除最近使用的表情记录</setting-text>
+          </div>
+          <setting-button data-type="secondary" id="le-clear-recent">立即清空</setting-button>
+        </setting-item>
+
+        <setting-item data-direction="column">
+          <div>
+            <setting-text>最近使用上限</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+              历史记录最多保留的条数（1-999）
+            </setting-text>
+            <div class="input-group">
+              <input class="le-recent-limit" type="number" min="1" max="999">
+              <div class="ops-btns">
+                <setting-button data-type="secondary" class="le-recent-limit-apply">立即应用</setting-button>
+              </div>
+            </div>
+          </div>
+        </setting-item>
+
+        <setting-item data-direction="column">
+          <div>
+            <setting-text>置顶表情上限</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+              允许固定到顶部的最大数量（1-99）
+            </setting-text>
+            <div class="input-group">
+              <input class="le-pin-limit" type="number" min="1" max="99">
+              <div class="ops-btns">
+                <setting-button data-type="secondary" class="le-pin-limit-apply">立即应用</setting-button>
+              </div>
+            </div>
+          </div>
+        </setting-item>
+      </setting-list>
+    </setting-panel>
+  </setting-section>
+
+  <setting-section data-title="关于">
+    <setting-panel>
+      <setting-list data-direction="column">
+        <setting-item data-direction="row">
+          <div>
+            <setting-text>版本号</setting-text>
+            <setting-text data-type="secondary" id="le-settings-version" style="-webkit-line-clamp: initial">dev</setting-text>
+          </div>
+          <setting-button data-type="secondary" id="le-open-data-dir">打开数据目录</setting-button>
+        </setting-item>
+      </setting-list>
+    </setting-panel>
+  </setting-section>
+</div>

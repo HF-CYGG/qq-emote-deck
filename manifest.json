@@ -1,0 +1,22 @@
+{
+  "manifest_version": 4,
+  "type": "extension",
+  "name": "QQ Emote Deck（本地表情）",
+  "slug": "local_emotes",
+  "description": "在 QQNT 中管理、预览与发送本地表情包",
+  "version": "0.1.0",
+  "icon": "./assets/icon.svg",
+  "thumb": "./assets/icon.svg",
+  "authors": [
+    {
+      "name": "次元咕咕",
+      "link": "https://github.com/HF-CYGG"
+    }
+  ],
+  "platform": ["win32", "linux", "darwin"],
+  "injects": {
+    "renderer": "./src/renderer.js",
+    "main": "./src/main.js",
+    "preload": "./src/preload.js"
+  }
+}
