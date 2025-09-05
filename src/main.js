@@ -21,6 +21,7 @@ function ensureDirSync(dir) {
 const PLUGIN_DATA_DIR = getPluginDataDir();
 const EMOTE_DIR = path.join(PLUGIN_DATA_DIR, "emotes");
 const LOG_FILE = path.join(PLUGIN_DATA_DIR, "log.txt");
+const CONFIG_FILE = path.join(PLUGIN_DATA_DIR, "config.json");
 
 // 新增：运行时 IPC 捕获状态与工具
 const CAPTURE_STATE = { enabled: false, up: [], down: [] };
