@@ -260,6 +260,20 @@ async function ipcOpenDataDir() {
   try { return await ipcRenderer.invoke("localEmote:openDataDir"); } catch (_) { return false; }
 }
 
+// 调用主进程：运行时 IPC 捕获开关与日志访问
+async function setCaptureEnabled(v) {
+  try { return await ipcRenderer.invoke("localEmote:setCaptureEnabled", !!v); } catch (_) { return false; }
+}
+async function getCaptureEnabled() {
+  try { return await ipcRenderer.invoke("localEmote:getCaptureEnabled"); } catch (_) { return false; }
+}
+async function getIpcLog() {
+  try { return await ipcRenderer.invoke("localEmote:getIpcLog"); } catch (_) { return { up: [], down: [] }; }
+}
+async function clearIpcLog() {
+  try { return await ipcRenderer.invoke("localEmote:clearIpcLog"); } catch (_) { return false; }
+}
+
 // A safe stub for sendEmote; renderer handles DOM insertion/animation.
 async function sendEmote(_absPath) {
   try { return await ipcRenderer.invoke("localEmote:send", _absPath); } catch (_) { return { ok: false }; }
@@ -372,6 +386,11 @@ contextBridge.exposeInMainWorld("localEmote", {
   toLocalUrl,
   // 发送
   sendEmote,
+  // 调试：IPC 捕获控制与日志
+  setCaptureEnabled,
+  getCaptureEnabled,
+  getIpcLog,
+  clearIpcLog,
   // LiteLoader 路径（只读）
   paths: LiteLoader.path,
 });

@@ -22,7 +22,46 @@ const PLUGIN_DATA_DIR = getPluginDataDir();
 const EMOTE_DIR = path.join(PLUGIN_DATA_DIR, "emotes");
 const LOG_FILE = path.join(PLUGIN_DATA_DIR, "log.txt");
 
-const CONFIG_FILE = path.join(PLUGIN_DATA_DIR, "config.json");
+// 新增：运行时 IPC 捕获状态与工具
+const CAPTURE_STATE = { enabled: false, up: [], down: [] };
+function setCaptureEnabled(v) { CAPTURE_STATE.enabled = !!v; }
+function safeCloneArgs(args) {
+  try { return JSON.parse(JSON.stringify(args)); } catch (_) { return []; }
+}
+function extractCmd(entryArgs) {
+  try {
+    // 常见结构： [router, [ { cmdName, payload }, ... ] ] 或单对象
+    for (const a of entryArgs) {
+      if (!a) continue;
+      if (Array.isArray(a)) {
+        for (const b of a) {
+          if (b && typeof b === 'object' && typeof b.cmdName === 'string') return b.cmdName;
+        }
+      } else if (typeof a === 'object') {
+        if (typeof a.cmdName === 'string') return a.cmdName;
+        // 也可能是 { list: [ { cmdName } ] }
+        const vals = Object.values(a);
+        for (const v of vals) {
+          if (Array.isArray(v)) {
+            for (const it of v) {
+              if (it && typeof it === 'object' && typeof it.cmdName === 'string') return it.cmdName;
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+  return undefined;
+}
+function pushCap(dir, channel, args, where, winId) {
+  if (!CAPTURE_STATE.enabled) return;
+  const entry = { ts: Date.now(), dir, channel, where, winId: Number.isFinite(winId) ? winId : undefined, cmdName: extractCmd(args), args: safeCloneArgs(args) };
+  const bucket = dir === 'up' ? CAPTURE_STATE.up : CAPTURE_STATE.down;
+  bucket.push(entry);
+  if (bucket.length > 200) bucket.shift();
+  try { fs.appendFile(LOG_FILE, `[cap] ${new Date().toISOString()} ${dir} ${channel} ${entry.cmdName || ''}\n`, () => {}); } catch (_) {}
+}
+
 function defaultConfig() {
   return { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", recentLimit: 60, pinLimit: 12 };
 }
@@ -307,16 +346,55 @@ ipcMain.handle("localEmote:openDataDir", async () => {
   }
 });
 
+// 新增：运行时捕获开关与日志访问 IPC
+ipcMain.handle("localEmote:setCaptureEnabled", async (_e, v) => {
+  setCaptureEnabled(!!v);
+  const cfg = readConfigSync();
+  cfg.debug = !!v;
+  writeConfigSync(cfg);
+  return CAPTURE_STATE.enabled;
+});
+ipcMain.handle("localEmote:getCaptureEnabled", async () => CAPTURE_STATE.enabled);
+ipcMain.handle("localEmote:getIpcLog", async () => ({ up: CAPTURE_STATE.up.slice(-100), down: CAPTURE_STATE.down.slice(-100) }));
+ipcMain.handle("localEmote:clearIpcLog", async () => { CAPTURE_STATE.up = []; CAPTURE_STATE.down = []; return true; });
+
 // 新增：从指定根目录列出子文件夹表情包
 ipcMain.handle("localEmote:listPacksInDir", async (_e, dir) => listPacksInDir(dir));
 
 exports.onBrowserWindowCreated = (window) => {
-  // 保留扩展点
+  // 新增：hook webContents，捕获上下行 IPC
+  try {
+    const wc = window.webContents;
+    const winId = window.id;
+    // 下行：wrap send
+    if (wc && typeof wc.send === 'function') {
+      const origSend = wc.send.bind(wc);
+      wc.send = (channel, ...args) => {
+        try { pushCap('down', channel, args, 'wc.send', winId); } catch (_) {}
+        return origSend(channel, ...args);
+      };
+    }
+    // 上行：监听 renderer -> main 的 IPC 事件
+    wc.on('ipc-message', (_event, channel, ...args) => {
+      try { pushCap('up', channel, args, 'ipc-message', winId); } catch (_) {}
+    });
+    wc.on('ipc-message-sync', (_event, channel, ...args) => {
+      try { pushCap('up', channel, args, 'ipc-message-sync', winId); } catch (_) {}
+    });
+    // 一些 invoke 请求也可以监听
+    wc.on('ipc-invoke', (_event, channel, ...args) => {
+      try { pushCap('up', channel, args, 'ipc-invoke', winId); } catch (_) {}
+    });
+  } catch (e) {
+    log('onBrowserWindowCreated hook error', e?.message || e);
+  }
 };
 
 exports.onLogin = (uid) => {
   // 登录时初始化目录
   ensureDirSync(EMOTE_DIR);
+  // 从配置恢复捕获开关
+  try { CAPTURE_STATE.enabled = !!readConfigSync().debug; } catch (_) {}
 };
 
 // IPC: ping

@@ -206,11 +206,26 @@ function matchHotkey(e, hk) {
 }
 function onGlobalKeydown(e) {
   try {
+    try { if (typeof ensureLESendMsgDebugHookInstalled === 'function') ensureLESendMsgDebugHookInstalled(); } catch (_) {}
     // 忽略脚本派发的键盘事件，避免触发热键造成“回车->打开面板->再次点击卡片”的循环
     if (e && e.isTrusted === false) return;
     const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
     const isEditable = (e.target && (e.target.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select'));
     dbg('onGlobalKeydown:', e.key, 'target=', tag, 'editable=', isEditable);
+    // 调试热键：Alt+Shift+S 触发扫描（允许在编辑框内使用）
+    try {
+      const cfg2 = window.localEmote && window.localEmote.getConfig ? window.localEmote.getConfig() : null;
+      if (cfg2 && cfg2.debug && (e.key === 'S' || e.key === 's') && e.altKey && e.shiftKey) {
+        e.preventDefault(); e.stopPropagation();
+        if (typeof scanStoreForMsgElements === 'function') {
+          const res = scanStoreForMsgElements(8);
+          dbg('debug hotkey: scanStore results=', res && res.length);
+        } else {
+          dbg('debug hotkey: scanStore function missing');
+        }
+        return;
+      }
+    } catch (_) {}
     if (isEditable && e.key !== 'Escape') return;
     const cfg = window.localEmote.getConfig();
     const hk = parseHotkeyString(cfg.hotkey || 'Alt+E');
@@ -563,13 +578,31 @@ function findSendButton(container) {
   dbg('findSendButton: not found');
   return null;
 }
-// 从全局 Vue store 等来源推断当前会话 peer
+// 从 lite_tools 或全局 Vue store 等来源推断当前会话 peer（优先 lite_tools.getPeer）
 function derivePeer() {
+  // 0) 最近缓存
   try {
-    if (window.app && window.app.curAioData && window.app.curAioData.peer) {
-      return window.app.curAioData.peer;
+    const lp = window.__le_lastPeer;
+    if (lp && lp.chatType && lp.peerUid) return lp;
+  } catch (_) {}
+  // 1) lite_tools.getPeer（若可用）
+  try {
+    if (window.lite_tools && typeof window.lite_tools.getPeer === 'function') {
+      const p = window.lite_tools.getPeer();
+      if (p && p.chatType && p.peerUid) return p;
     }
   } catch (_) {}
+  // 2) window.app.curAioData
+  try {
+    if (window.app && window.app.curAioData) {
+      const c = window.app.curAioData;
+      if (c.peer && c.peer.chatType && c.peer.peerUid) return c.peer;
+      const chatType = c.chatType || (c.peer && c.peer.chatType);
+      const peerUid = (c.header && c.header.uid) || (c.peer && c.peer.peerUid) || c.peerUid;
+      if (chatType && peerUid) return { chatType, peerUid };
+    }
+  } catch (_) {}
+  // 3) Vuex store 常见路径
   try {
     const store = window.app && window.app.__vue_app__ && window.app.__vue_app__.config && window.app.__vue_app__.config.globalProperties && window.app.__vue_app__.config.globalProperties.$store;
     const st = store && store.state;
@@ -584,8 +617,35 @@ function derivePeer() {
       if (chatType && peerUid) return { chatType, peerUid };
     }
   } catch (_) {}
+  // 4) 最近一次 sendMsg 捕获
+  try {
+    const ls = window.__le_lastSendMsg && window.__le_lastSendMsg.peer;
+    if (ls && ls.chatType && ls.peerUid) {
+      try { window.__le_lastPeer = ls; } catch (_) {}
+      return ls;
+    }
+  } catch (_) {}
+  // 5) 深度扫描 store 中的消息元素，尝试从元素容器/父对象推断 peer
+  try {
+    const arr = (typeof scanStoreForMsgElements === 'function') ? scanStoreForMsgElements(5) : [];
+    for (const r of arr) {
+      const p1 = r && r.peer;
+      if (p1 && p1.chatType && p1.peerUid) { try { window.__le_lastPeer = p1; } catch (_) {} return p1; }
+      const parent = r && r.parent;
+      if (parent && typeof parent === 'object') {
+        const cands = [parent.peer, parent.contact, parent.talker, parent.chat, parent.session, parent.target].filter(Boolean);
+        for (const c of cands) {
+          if (c && c.chatType && c.peerUid) { try { window.__le_lastPeer = c; } catch (_) {} return c; }
+        }
+        const chatType = parent.chatType || (parent.peer && parent.peer.chatType);
+        const peerUid = (parent.header && parent.header.uid) || (parent.peer && parent.peer.peerUid) || parent.peerUid;
+        if (chatType && peerUid) { const pp = { chatType, peerUid }; try { window.__le_lastPeer = pp; } catch (_) {} return pp; }
+      }
+    }
+  } catch (_) {}
   return null;
 }
+try { window.derivePeer = derivePeer; } catch (_) {}
 function tryInsertImageToEditor(absPath) {
   try {
     const editor = getEditorEl();
@@ -609,6 +669,502 @@ function dbg(...args) {
     if (cfg && cfg.debug) console.debug('[local_emotes]', ...args);
   } catch (_) {}
 }
+(function setupLESendMsgDebugHook() {
+  try {
+    const cfg = window.localEmote && window.localEmote.getConfig ? window.localEmote.getConfig() : null;
+    if (!cfg || !cfg.debug) return;
+    const lt = window.lite_tools;
+    if (!lt || typeof lt.nativeCall !== 'function') return;
+    if (lt.__le_sendmsg_hooked) return;
+    const orig = lt.nativeCall.bind(lt);
+    lt.nativeCall = async function(...args) {
+      try {
+        // 捕获所有 nativeCall 以便排查
+        try {
+          window.__le_nativeCalls = window.__le_nativeCalls || [];
+          const d0 = (args && args[1]) || null;
+          window.__le_nativeCalls.push(d0);
+          if (window.__le_nativeCalls.length > 100) window.__le_nativeCalls.shift();
+          try { window.__le_lastSendNative = d0; } catch (_) {}
+        } catch (_) {}
+        const detail = args && args[1];
+        if (detail && detail.cmdName === 'nodeIKernelMsgService/sendMsg') {
+          try {
+            const payload = detail && detail.payload ? detail.payload[0] : null;
+            const peer = payload && payload.peer;
+            const elems = payload && payload.msgElements ? payload.msgElements : [];
+            const brief = (elems || []).map((e) => {
+              const t = e && e.elementType;
+              const elementKeys = e ? Object.keys(e).filter(k => /Element$/.test(k)) : [];
+              const which = elementKeys.find(Boolean);
+              const inner = which && e[which] ? Object.keys(e[which]) : [];
+              return { elementType: t, elementKeys, innerKeys: inner };
+            });
+            dbg('sendMsg payload peer=', peer);
+            dbg('sendMsg payload elements brief=', brief);
+            try { window.__le_lastSendMsg = { peer, brief, msgElements: elems, payload }; } catch (_) {}
+          } catch (err) { dbg('sendMsg debug parse error', err && err.message); }
+        }
+      } catch (_) {}
+      return orig(...args);
+    };
+    lt.__le_sendmsg_hooked = true;
+    dbg('sendMsg debug hook installed');
+  } catch (_) {}
+})();
+
+// 运行时按需安装（当用户动态开启 debug 后仍可捕捉 sendMsg）
+function ensureLESendMsgDebugHookInstalled() {
+  try {
+    const cfg = window.localEmote && window.localEmote.getConfig ? window.localEmote.getConfig() : null;
+    if (!cfg || !cfg.debug) return;
+    const lt = window.lite_tools;
+    if (!lt || typeof lt.nativeCall !== 'function') return;
+    if (lt.__le_sendmsg_hooked || window.__le_sendmsg_hooked) return;
+    const orig = lt.nativeCall.bind(lt);
+    const wrapper = async function(...args) {
+      try {
+        // 捕获所有 nativeCall 以便排查
+        try {
+          window.__le_nativeCalls = window.__le_nativeCalls || [];
+          const d0 = (args && args[1]) || null;
+          window.__le_nativeCalls.push(d0);
+          if (window.__le_nativeCalls.length > 100) window.__le_nativeCalls.shift();
+          try { window.__le_lastSendNative = d0; } catch (_) {}
+        } catch (_) {}
+        const detail = args && args[1];
+        if (detail && detail.cmdName === 'nodeIKernelMsgService/sendMsg') {
+          try {
+            const payload = detail && detail.payload ? detail.payload[0] : null;
+            const peer = payload && payload.peer;
+            const elems = payload && payload.msgElements ? payload.msgElements : [];
+            const brief = (elems || []).map((e) => {
+              const t = e && e.elementType;
+              const elementKeys = e ? Object.keys(e).filter(k => /Element$/.test(k)) : [];
+              const which = elementKeys.find(Boolean);
+              const inner = which && e[which] ? Object.keys(e[which]) : [];
+              return { elementType: t, elementKeys, innerKeys: inner };
+            });
+            dbg('sendMsg payload peer=', peer);
+            dbg('sendMsg payload elements brief=', brief);
+            try { window.__le_lastSendMsg = { peer, brief, msgElements: elems, payload }; } catch (_) {}
+          } catch (err) { dbg('sendMsg debug parse error', err && err.message); }
+        }
+      } catch (_) {}
+      return orig(...args);
+    };
+    let done = false;
+    // 1) 直接赋值尝试
+    try { lt.nativeCall = wrapper; done = (lt.nativeCall === wrapper); } catch (_) {}
+    // 2) defineProperty 尝试
+    if (!done) {
+      let desc = null; try { desc = Object.getOwnPropertyDescriptor(lt, 'nativeCall'); } catch (_) {}
+      if (desc && (desc.configurable || desc.writable)) {
+        try { Object.defineProperty(lt, 'nativeCall', { configurable: true, enumerable: true, writable: true, value: wrapper }); done = (lt.nativeCall === wrapper); } catch (_) {}
+      }
+    }
+    // 3) Proxy 包裹回退
+    if (!done && window && window.lite_tools === lt) {
+      try {
+        const proxy = new Proxy(lt, { get(t, p, r) { if (p === 'nativeCall') return wrapper; return Reflect.get(t, p, r); } });
+        try { window.lite_tools = proxy; } catch (_) {}
+        done = (window.lite_tools && window.lite_tools.nativeCall === wrapper);
+      } catch (_) {}
+    }
+    if (done) {
+      try { lt.__le_sendmsg_hooked = true; } catch (_) {}
+      try { window.__le_sendmsg_hooked = true; } catch (_) {}
+      dbg('sendMsg debug hook installed (lazy/robust)');
+    } else {
+      dbg('sendMsg debug hook install failed (lazy): nativeCall is non-writable');
+    }
+  } catch (_) {}
+}
+try { window.__le_installSendMsgHook = ensureLESendMsgDebugHookInstalled; } catch (_) {}
+
+// 官方消息元素转换与发送
+async function le_convertMessage(message) {
+try { window.le_convertMessage = le_convertMessage; } catch (_) {}
+
+// --- LE main-world bridge injection (works under contextIsolation) ---
+try {
+  (function installLEMainWorldBridge() {
+    if (window.__LE_BRIDGE_ATTEMPTED) return; // avoid duplicate
+    window.__LE_BRIDGE_ATTEMPTED = true;
+    // 1) Inject a script into MAIN WORLD to expose proxy functions
+    try {
+      const s = document.createElement('script');
+      s.id = 'le-main-bridge';
+      s.textContent = `(() => {\n  try {\n    if (window.__LE_BRIDGE_INSTALLED) return;\n    window.__LE_BRIDGE_INSTALLED = true;\n    const pending = new Map();\n    window.addEventListener('message', (e) => {\n      const d = e.data;\n      if (!d || d.__from !== 'le-isolated' || !d.id) return;\n      const p = pending.get(d.id);\n      if (!p) return;\n      pending.delete(d.id);\n      if (d.error) {\n        const err = new Error(d.error.message || 'LE bridge error');\n        err.name = d.error.name || err.name;\n        err.stack = d.error.stack || err.stack;\n        p.reject(err);\n      } else {\n        p.resolve(d.result);\n      }\n    }, false);\n    function send(type, payload) {\n      const id = Math.random().toString(36).slice(2);\n      return new Promise((resolve, reject) => {\n        pending.set(id, { resolve, reject });\n        window.postMessage({ __to: 'le-isolated', id, type, payload }, '*');\n      });\n    }\n    // Expose proxies in MAIN WORLD\n    window.le_sendMessage = function(peer, messages, opts) {\n      return send('sendMessage', { peer, messages, opts });\n    };\n    window.le_convertMessage = function(messages) {\n      return send('convertMessage', { messages });\n    };\n    window.derivePeer = function() {\n      return send('derivePeer', {});\n    };\n  } catch (e) {\n    console.error('[local_emotes] main-world bridge install failed', e);\n  }\n})();`;
+      document.documentElement.appendChild(s);
+      s.remove();
+    } catch (e) {
+      console.error('[local_emotes] bridge script inject failed', e);
+    }
+
+    // 2) Install ISOLATED WORLD message handler to serve MAIN WORLD requests
+    if (!window.__LE_ISOLATED_BRIDGE_INSTALLED) {
+      window.__LE_ISOLATED_BRIDGE_INSTALLED = true;
+      window.addEventListener('message', (e) => {
+        const d = e.data;
+        if (!d || d.__to !== 'le-isolated' || !d.id) return;
+        (async () => {
+          try {
+            let result;
+            if (d.type === 'sendMessage') {
+              const { peer, messages, opts } = d.payload || {};
+              result = await le_sendMessage(peer, messages, opts);
+            } else if (d.type === 'convertMessage') {
+              const { messages } = d.payload || {};
+              result = await le_convertMessage(messages);
+            } else if (d.type === 'derivePeer') {
+              result = await derivePeer();
+            } else {
+              throw new Error('Unknown bridge type: ' + d.type);
+            }
+            window.postMessage({ __from: 'le-isolated', id: d.id, result }, '*');
+          } catch (err) {
+            window.postMessage({ __from: 'le-isolated', id: d.id, error: { message: String((err && err.message) || err), name: err && err.name, stack: err && err.stack } }, '*');
+          }
+        })();
+      }, false);
+    }
+  })();
+} catch (e) {
+  console.error('[local_emotes] installLEMainWorldBridge error', e);
+}
+// --- end LE main-world bridge injection ---
+  const lt = (globalThis && globalThis.lite_tools) || window.lite_tools;
+  switch ((message && message.type) || '') {
+    case 'text':
+      return {
+        elementType: 1,
+        elementId: '',
+        textElement: {
+          content: message.content || '',
+          atType: 0,
+          atUid: '',
+          atTinyId: '',
+          atNtUid: '',
+        },
+      };
+    case 'image': {
+      const path = message.path;
+      if (!lt || !path) return null;
+      try {
+        await lt.nativeCall(
+          { type: 'request', eventName: 'FileApi' },
+          { cmdName: 'getFileType', cmdType: 'invoke', payload: [path] },
+          true
+        );
+      } catch (_) {}
+      let copyFile = null;
+      try {
+        copyFile = await lt.nativeCall(
+          { type: 'request', eventName: 'ntApi' },
+          { cmdName: 'nodeIKernelMsgService/copyFileWithDelExifInfo', cmdType: 'invoke', payload: [ { sourcePath: path, elementSubType: (Number(message && message.picSubType) === 1 ? 5 : 1) }, null ] },
+          true
+        );
+      } catch (e) { dbg('copyFileWithDelExifInfo failed', e && e.message); }
+      const newPath = (copyFile && copyFile.newPath) || path;
+      let fileType;
+      try {
+        fileType = await lt.nativeCall(
+          { type: 'request', eventName: 'FileApi' },
+          { cmdName: 'getFileType', cmdType: 'invoke', payload: [newPath] },
+          true
+        );
+      } catch (_) {
+        try {
+          fileType = await lt.nativeCall(
+            { type: 'request', eventName: 'FileApi' },
+            { cmdName: 'getFileType', cmdType: 'invoke', payload: [path] },
+            true
+          );
+        } catch (e2) { dbg('fileType fallback failed', e2 && e2.message); }
+      }
+      let imageSize;
+      try {
+        imageSize = await lt.nativeCall(
+          { type: 'request', eventName: 'FileApi' },
+          { cmdName: 'getImageSize', cmdType: 'invoke', payload: [newPath] },
+          true
+        );
+      } catch (_) {
+        try {
+          imageSize = await lt.nativeCall(
+            { type: 'request', eventName: 'FileApi' },
+            { cmdName: 'getImageSizeFromPath', cmdType: 'invoke', payload: [newPath] },
+            true
+          );
+        } catch (e2) { dbg('imageSize fallback failed', e2 && e2.message); }
+      }
+      let md5Hex = '';
+      try {
+        md5Hex = await lt.nativeCall(
+          { type: 'request', eventName: 'FileApi' },
+          { cmdName: 'getFileMd5', cmdType: 'invoke', payload: [newPath] },
+          true
+        );
+      } catch (_) {
+        try {
+          md5Hex = await lt.nativeCall(
+            { type: 'request', eventName: 'FileApi' },
+            { cmdName: 'getFileMd5', cmdType: 'invoke', payload: [path] },
+            true
+          );
+        } catch (e2) { dbg('md5 fallback failed', e2 && e2.message); }
+      }
+      let fileSize;
+      try {
+        fileSize = await lt.nativeCall(
+          { type: 'request', eventName: 'FileApi' },
+          { cmdName: 'getFileSize', cmdType: 'invoke', payload: [newPath] },
+          true
+        );
+      } catch (_) {
+        try {
+          fileSize = await lt.nativeCall(
+            { type: 'request', eventName: 'FileApi' },
+            { cmdName: 'getFileSize', cmdType: 'invoke', payload: [path] },
+            true
+          );
+        } catch (e2) { dbg('fileSize fallback failed', e2 && e2.message); }
+      }
+      const getFileName = (p) => {
+        if (typeof p !== 'string') return '';
+        const trimmed = p.replace(/[\\/]+$/, '');
+        if (trimmed === '') return '';
+        const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+        const name = idx === -1 ? trimmed : trimmed.slice(idx + 1);
+        if (/^[A-Za-z]:$/.test(name)) return '';
+        return name;
+      };
+      const picElement = {
+        md5HexStr: (copyFile && copyFile.md5) || md5Hex, 
+        picWidth: imageSize && imageSize.width,
+        picHeight: imageSize && imageSize.height,
+        fileName: getFileName(newPath),
+        fileSize: fileSize,
+        original: (Number(message && message.picSubType) === 1) ? false : true,
+        picType: (fileType && fileType.ext === 'gif') ? 2000 : 1000,
+        picSubType: (typeof message.picSubType === 'number' ? message.picSubType : 1),
+        sourcePath: newPath,
+        fileUuid: '',
+        fileSubId: '',
+        thumbFileSize: 0,
+        thumbPath: undefined,
+        summary: '',
+      };
+      return { elementType: 2, elementId: '', extBufForUI: new Uint8Array(), picElement };
+    }
+    default:
+      return null;
+  }
+}
+
+async function le_sendMessage(peer, messages) {
+try { window.le_sendMessage = le_sendMessage; } catch (_) {}
+  const lt = (globalThis && globalThis.lite_tools) || window.lite_tools;
+  if (!lt || !peer || !messages || !messages.length) throw new Error('lite_tools/peer/messages missing');
+  const converted = (await Promise.all(messages.map((m) => le_convertMessage(m)))).filter(Boolean);
+  if (!converted.length) throw new Error('le_sendMessage: no valid msgElements');
+  return lt.nativeCall(
+    { eventName: 'ntApi', type: 'request' },
+    {
+      cmdName: 'nodeIKernelMsgService/sendMsg',
+      cmdType: 'invoke',
+      payload: [
+        {
+          msgId: '0',
+          peer,
+          msgElements: converted,
+          msgAttributeInfos: new Map(),
+        },
+        null,
+      ],
+    }
+  );
+}
+
+// 新增：扫描全局 store 中的消息元素结构（仅调试模式可用）
+function scanStoreForMsgElements(maxResults = 8) {
+  try {
+    const cfg = window.localEmote && window.localEmote.getConfig ? window.localEmote.getConfig() : null;
+    if (!cfg || !cfg.debug) {
+      try { window.__le_scanStoreResults = []; } catch (_) {}
+      return [];
+    }
+
+    // 收集候选根：store.state、Vue DevTools apps、window.app 及回退节点
+    const roots = [];
+    try {
+      const store = window.app && window.app.__vue_app__ && window.app.__vue_app__.config && window.app.__vue_app__.config.globalProperties && window.app.__vue_app__.config.globalProperties.$store;
+      if (store && store.state) roots.push({ v: store.state, path: 'store.state' });
+    } catch (_) {}
+
+    try {
+      const hook = window.__VUE_DEVTOOLS_GLOBAL_HOOK__;
+      if (hook && Array.isArray(hook.apps)) {
+        hook.apps.forEach((entry, idx) => {
+          const app = entry && (entry.app || entry);
+          const stores = [
+            app && app.config && app.config.globalProperties && app.config.globalProperties.$store,
+            app && app._context && app._context.config && app._context.config.globalProperties && app._context.config.globalProperties.$store,
+            app && app._instance && app._instance.appContext && app._instance.appContext.config && app._instance.appContext.config.globalProperties && app._instance.appContext.config.globalProperties.$store,
+            app && app._instance && app._instance.proxy && app._instance.proxy.$store,
+          ].filter(Boolean);
+          stores.forEach((st, j) => { try { if (st && st.state) roots.push({ v: st.state, path: `devtools.apps[${idx}].store[${j}].state` }); } catch (_) {} });
+          const extras = [
+            { v: app, path: `devtools.apps[${idx}].app` },
+            { v: app && app._instance, path: `devtools.apps[${idx}].app._instance` },
+            { v: app && app._context, path: `devtools.apps[${idx}].app._context` },
+            { v: app && app.config, path: `devtools.apps[${idx}].app.config` },
+            { v: app && app.config && app.config.globalProperties, path: `devtools.apps[${idx}].app.config.globalProperties` },
+          ];
+          extras.forEach(p => { if (p.v) roots.push(p); });
+        });
+      }
+    } catch (_) {}
+
+    try { if (window.app && window.app.__vue_app__) roots.push({ v: window.app.__vue_app__, path: 'window.app.__vue_app__' }); } catch (_) {}
+    try { if (window.app) roots.push({ v: window.app, path: 'window.app' }); } catch (_) {}
+    try { const ca = window.app && window.app.curAioData; if (ca && typeof ca === 'object') roots.push({ v: ca, path: 'window.app.curAioData' }); } catch (_) {}
+
+    if (roots.length === 0) {
+      dbg('scanStore: no vue store; no devtools apps; fallback roots= 0');
+    } else {
+      dbg('scanStore: candidate roots=', roots.length);
+    }
+
+    const results = [];
+    const visited = new Set();
+    const queue = [];
+    roots.forEach(r => { if (r && r.v && typeof r.v === 'object') queue.push({ v: r.v, path: r.path, depth: 0 }); });
+
+    if (queue.length === 0) {
+      try {
+        const ca = window.app && window.app.curAioData;
+        if (ca && typeof ca === 'object') {
+          queue.push({ v: ca, path: 'window.app.curAioData', depth: 0 });
+          dbg('scanStore: fallback to window.app.curAioData');
+        }
+      } catch (_) {}
+    }
+
+    const MAX_NODES = 6000;
+    const MAX_DEPTH = 7;
+
+    function toBrief(e) {
+      try {
+        const t = e && e.elementType;
+        const elementKeys = e ? Object.keys(e).filter(k => /Element$/.test(k)) : [];
+        const which = elementKeys.find(Boolean);
+        const inner = which && e[which] ? Object.keys(e[which]) : [];
+        return { elementType: t, elementKeys, innerKeys: inner };
+      } catch (_) { return { elementType: undefined, elementKeys: [], innerKeys: [] }; }
+    }
+
+    function looksLikeElementsArray(arr) {
+      try {
+        if (!Array.isArray(arr) || !arr.length) return false;
+        const end = Math.min(arr.length, 5);
+        for (let i = 0; i < end; i++) {
+          const el = arr[i];
+          if (el && typeof el === 'object') {
+            const hasType = ('elementType' in el);
+            const hasInner = Object.keys(el).some(k => /Element$/.test(k));
+            if (hasType || hasInner) return true;
+          }
+        }
+        return false;
+      } catch (_) { return false; }
+    }
+
+    let visitedCount = 0;
+    while (queue.length && visitedCount < MAX_NODES && results.length < maxResults) {
+      const { v, path, depth } = queue.shift();
+      if (!v || typeof v !== 'object') continue;
+      if (visited.has(v)) continue;
+      visited.add(v);
+      visitedCount++;
+
+      try {
+        if (Array.isArray(v)) {
+          // 若当前节点本身就是元素数组
+          if (looksLikeElementsArray(v)) {
+            results.push({ path, brief: v.map(toBrief), ref: v, parent: null, peer: undefined });
+          }
+          // 倒序优先扫描最近项
+          for (let i = v.length - 1; i >= Math.max(0, v.length - 8); i--) {
+            const item = v[i];
+            if (item && typeof item === 'object') {
+              const elems = item.msgElements || item.elements || item.elem || item.msgElementList || item.elementList || null;
+              if (looksLikeElementsArray(elems)) {
+                const guessedPeer = item && (item.peer || item.contact || item.talker || item.chat || item.session || item.target || null);
+                results.push({ path: `${path}[${i}]`, brief: elems.map(toBrief), ref: elems, parent: item, peer: guessedPeer });
+                if (results.length >= maxResults) break;
+              }
+              if (depth < MAX_DEPTH) {
+                for (const k of Object.keys(item)) {
+                  const child = item[k];
+                  if (child && typeof child === 'object') queue.push({ v: child, path: `${path}[${i}].${k}`, depth: depth + 1 });
+                }
+              }
+            }
+          }
+        } else {
+          const maybeElems = v.msgElements || v.elements || v.elem || v.msgElementList || v.elementList || null;
+          if (looksLikeElementsArray(maybeElems)) {
+            let key = null;
+            if (v.msgElements) key = 'msgElements';
+            else if (v.elements) key = 'elements';
+            else if (v.elem) key = 'elem';
+            else if (v.msgElementList) key = 'msgElementList';
+            else if (v.elementList) key = 'elementList';
+            const guessedPeer = v && (v.peer || v.contact || v.talker || v.chat || v.session || v.target || null);
+            results.push({ path: key ? `${path}.${key}` : path, brief: maybeElems.map(toBrief), ref: maybeElems, parent: v, peer: guessedPeer });
+          }
+          // 额外：扫描对象里的任意数组属性，若“像元素数组”则也收集
+          for (const k of Object.keys(v)) {
+            const child = v[k];
+            if (Array.isArray(child) && looksLikeElementsArray(child)) {
+              const guessedPeer = v && (v.peer || v.contact || v.talker || v.chat || v.session || v.target || null);
+              results.push({ path: `${path}.${k}`, brief: child.map(toBrief), ref: child, parent: v, peer: guessedPeer });
+            }
+          }
+          if (depth < MAX_DEPTH) {
+            for (const k of Object.keys(v)) {
+              const child = v[k];
+              if (child && typeof child === 'object') queue.push({ v: child, path: `${path}.${k}`, depth: depth + 1 });
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (results.length) {
+      dbg('scanStore: found candidates=', results.length);
+      for (let i = 0; i < Math.min(results.length, 3); i++) {
+        const r = results[i];
+        dbg(`scanStore[${i}] path=`, r.path);
+        dbg(`scanStore[${i}] brief=`, r.brief);
+      }
+    } else {
+      dbg('scanStore: no candidates');
+    }
+
+    try { window.__le_scanStoreResults = results; } catch (_) {}
+    return results;
+  } catch (e) {
+    dbg('scanStore error', e && e.message);
+    try { window.__le_scanStoreResults = []; } catch (_) {}
+    return [];
+  }
+}
+// 暴露给控制台
+try { window.scanStoreForMsgElements = scanStoreForMsgElements; } catch (_) {}
+
 // === 辅助函数结束 ===
 
 function renderSettings(view) {
@@ -819,94 +1375,29 @@ function buildOverlay() {
           if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode;
         } catch (e) { dbg('recent click: read config error', e && e.message); }
         // 根据发送模式：仅多发需要经过输入框确认；其余模式直接发送
+        // 等待 lite_tools 与 peer 就绪，避免 haveNative 误判
+        let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
+        if ((sendMode === 'native' || (ev && ev.altKey)) && (!lt || !derivePeer())) {
+          try {
+            const end = Date.now() + 800;
+            while (Date.now() < end) {
+              await new Promise(r => setTimeout(r, 50));
+              lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
+              if (lt && derivePeer()) break;
+            }
+          } catch (_) {}
+        }
+        try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
         const peer = derivePeer();
-        const haveNative = !!(window.lite_tools && peer);
+        const haveNative = !!(lt && peer);
         const doNative = (sendMode === 'native' && haveNative);
-        dbg('recent click: sendMode=', sendMode, 'haveNative=', haveNative);
+        dbg('recent click: sendMode=', sendMode, 'haveNative=', haveNative, 'peer=', peer);
 
-        if (sendMode === 'native' && window.lite_tools && peer) {
+        if ((sendMode === 'native' || (ev && ev.altKey)) && lt && peer) {
           dbg('recent click: native mode');
           try {
-            try {
-              await window.lite_tools.nativeCall(
-                { type: 'request', eventName: 'FileApi' },
-                { cmdName: 'getFileType', cmdType: 'invoke', payload: [p] },
-                true
-              );
-            } catch (_) {}
-            const copyFile = await window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'ntApi' },
-              { cmdName: 'nodeIKernelMsgService/copyFileWithDelExifInfo', cmdType: 'invoke', payload: [ { sourcePath: p, elementSubType: 1 }, null ] },
-              true
-            );
-            const newPath = (copyFile && copyFile.newPath) || p;
-            dbg('recent click: newPath', newPath, 'md5', copyFile && copyFile.md5);
-            const ftype = await window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'FileApi' },
-              { cmdName: 'getFileType', cmdType: 'invoke', payload: [newPath] },
-              true
-            );
-            const imageSize = await window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'FileApi' },
-              { cmdName: 'getImageSizeFromPath', cmdType: 'invoke', payload: [newPath] },
-              true
-            );
-            window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'FileApi' },
-              { cmdName: 'getFileMd5', cmdType: 'invoke', payload: [newPath] }
-            );
-            const fileSize = await window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'FileApi' },
-              { cmdName: 'getFileSize', cmdType: 'invoke', payload: [newPath] },
-              true
-            );
-            const getFileName = (path) => {
-              if (typeof path !== 'string') return '';
-              const trimmed = path.replace(/[\\/]+$/, '');
-              if (trimmed === '') return '';
-              const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-              const name = idx === -1 ? trimmed : trimmed.slice(idx + 1);
-              if (/^[A-Za-z]:$/.test(name)) return '';
-              return name;
-            };
-            const picElement = {
-              md5HexStr: copyFile && copyFile.md5,
-              picWidth: imageSize && imageSize.width,
-              picHeight: imageSize && imageSize.height,
-              fileName: getFileName(newPath),
-              fileSize: fileSize,
-              original: true,
-              picType: (ftype && ftype.ext === 'gif') ? 2000 : 1000,
-              picSubType: undefined,
-              sourcePath: newPath,
-              fileUuid: '',
-              fileSubId: '',
-              thumbFileSize: 0,
-              thumbPath: undefined,
-              summary: ''
-            };
-            const messageChannel = {
-              elementType: 2,
-              elementId: '',
-              extBufForUI: new Uint8Array(),
-              picElement
-            };
-            await window.lite_tools.nativeCall(
-              { eventName: 'ntApi', type: 'request' },
-              {
-                cmdName: 'nodeIKernelMsgService/sendMsg',
-                cmdType: 'invoke',
-                payload: [
-                  {
-                    msgId: '0',
-                    peer,
-                    msgElements: [messageChannel],
-                    msgAttributeInfos: new Map()
-                  },
-                  null
-                ]
-              }
-            );
+            const picSubType = 1;
+            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType }]);
             sentOk = true;
             dbg('recent click: native send ok');
             try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -1051,94 +1542,29 @@ function buildOverlay() {
         let cfg = null;
         let sendMode = 'multi';
         try { cfg = window.localEmote.getConfig ? window.localEmote.getConfig() : null; if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode; } catch (e) { dbg('grid click: read config error', e && e.message); }
+        // 等待 lite_tools 与 peer 就绪，避免 haveNative 误判
+        let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
+        if ((sendMode === 'native' || (ev && ev.altKey)) && (!lt || !derivePeer())) {
+          try {
+            const end = Date.now() + 800;
+            while (Date.now() < end) {
+              await new Promise(r => setTimeout(r, 50));
+              lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
+              if (lt && derivePeer()) break;
+            }
+          } catch (_) {}
+        }
+        try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
         const peer = derivePeer();
-        const haveNative = !!(window.lite_tools && peer);
+        const haveNative = !!(lt && peer);
         const doNative = (sendMode === 'native' && haveNative);
-        dbg('grid click: sendMode=', sendMode, 'haveNative=', haveNative);
+        dbg('grid click: sendMode=', sendMode, 'haveNative=', haveNative, 'peer=', peer);
 
-        if (sendMode === 'native' && window.lite_tools && peer) {
+        if ((sendMode === 'native' || (ev && ev.altKey)) && lt && peer) {
           dbg('grid click: native mode');
           try {
-            try {
-              await window.lite_tools.nativeCall(
-                { type: 'request', eventName: 'FileApi' },
-                { cmdName: 'getFileType', cmdType: 'invoke', payload: [p] },
-                true
-              );
-            } catch (_) {}
-            const copyFile = await window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'ntApi' },
-              { cmdName: 'nodeIKernelMsgService/copyFileWithDelExifInfo', cmdType: 'invoke', payload: [ { sourcePath: p, elementSubType: 1 }, null ] },
-              true
-            );
-            const newPath = (copyFile && copyFile.newPath) || p;
-            dbg('grid click: newPath', newPath, 'md5', copyFile && copyFile.md5);
-            const ftype = await window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'FileApi' },
-              { cmdName: 'getFileType', cmdType: 'invoke', payload: [newPath] },
-              true
-            );
-            const imageSize = await window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'FileApi' },
-              { cmdName: 'getImageSizeFromPath', cmdType: 'invoke', payload: [newPath] },
-              true
-            );
-            window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'FileApi' },
-              { cmdName: 'getFileMd5', cmdType: 'invoke', payload: [newPath] }
-            );
-            const fileSize = await window.lite_tools.nativeCall(
-              { type: 'request', eventName: 'FileApi' },
-              { cmdName: 'getFileSize', cmdType: 'invoke', payload: [newPath] },
-              true
-            );
-            const getFileName = (path) => {
-              if (typeof path !== 'string') return '';
-              const trimmed = path.replace(/[\\/]+$/, '');
-              if (trimmed === '') return '';
-              const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-              const name = idx === -1 ? trimmed : trimmed.slice(idx + 1);
-              if (/^[A-Za-z]:$/.test(name)) return '';
-              return name;
-            };
-            const picElement = {
-              md5HexStr: copyFile && copyFile.md5,
-              picWidth: imageSize && imageSize.width,
-              picHeight: imageSize && imageSize.height,
-              fileName: getFileName(newPath),
-              fileSize: fileSize,
-              original: true,
-              picType: (ftype && ftype.ext === 'gif') ? 2000 : 1000,
-              picSubType: undefined,
-              sourcePath: newPath,
-              fileUuid: '',
-              fileSubId: '',
-              thumbFileSize: 0,
-              thumbPath: undefined,
-              summary: ''
-            };
-            const messageChannel = {
-              elementType: 2,
-              elementId: '',
-              extBufForUI: new Uint8Array(),
-              picElement
-            };
-            await window.lite_tools.nativeCall(
-              { eventName: 'ntApi', type: 'request' },
-              {
-                cmdName: 'nodeIKernelMsgService/sendMsg',
-                cmdType: 'invoke',
-                payload: [
-                  {
-                    msgId: '0',
-                    peer,
-                    msgElements: [messageChannel],
-                    msgAttributeInfos: new Map()
-                  },
-                  null
-                ]
-              }
-            );
+            const picSubType = 1;
+            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType }]);
             sentOk = true;
             dbg('grid click: native send ok');
             try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
