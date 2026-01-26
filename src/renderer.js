@@ -2682,6 +2682,27 @@ function buildOverlay() {
   let selectedCat = '__recent__';
   let categoriesCache = [];
   let packsCache = [];
+  let renderRecentGridLock = false;
+  let renderRecentGridQueued = false;
+  let renderRecentGridPromise = null;
+  const RENDER_RECENT_THROTTLE = 200;
+  let renderGridLock = false;
+  let renderGridQueued = false;
+  let renderGridPromise = null;
+  const RENDER_GRID_THROTTLE = 200;
+  let loadPacksLock = false;
+  let loadPacksQueued = false;
+  let loadPacksPromise = null;
+  const LOAD_PACKS_THROTTLE = 300;
+  let showLock = false;
+  let showQueued = false;
+  let showPromise = null;
+  let showAnchorRect = null;
+  const SHOW_THROTTLE = 200;
+  let refreshLock = false;
+  let refreshQueued = false;
+  let refreshPromise = null;
+  const REFRESH_THROTTLE = 200;
 
   // 新增：根据当前选中分组更新主标题（根目录=“本地表情”，子文件夹=文件夹名）
   function updateMainTitle() {
@@ -2759,166 +2780,169 @@ function buildOverlay() {
 
   // 新增：渲染“历史表情”
   async function renderRecentGrid() {
-    dbg('renderRecentGrid: start');
-    if (!recentGrid) return;
-    recentGrid.innerHTML = '';
-    let all = [];
-    try { all = await window.localEmote.listRecent(); dbg('renderRecentGrid: got', all.length, 'items'); } catch (e) { dbg('renderRecentGrid: listRecent error', e && e.message); all = []; }
-    for (let idx = 0; idx < all.length; idx++) {
-      const it = all[idx];
-      const card = document.createElement('div');
-      card.className = 'le-card' + (it.pinned ? ' pinned' : '');
-      card.setAttribute('role', 'option');
-      card.setAttribute('tabindex', '-1');
+    if (renderRecentGridLock) { renderRecentGridQueued = true; return renderRecentGridPromise; }
+    renderRecentGridLock = true;
+    renderRecentGridPromise = (async () => {
+      dbg('renderRecentGrid: start');
+      if (!recentGrid) return;
+      recentGrid.innerHTML = '';
+      let all = [];
+      try { all = await window.localEmote.listRecent(); dbg('renderRecentGrid: got', all.length, 'items'); } catch (e) { dbg('renderRecentGrid: listRecent error', e && e.message); all = []; }
+      for (let idx = 0; idx < all.length; idx++) {
+        const it = all[idx];
+        const card = document.createElement('div');
+        card.className = 'le-card' + (it.pinned ? ' pinned' : '');
+        card.setAttribute('role', 'option');
+        card.setAttribute('tabindex', '-1');
 
-      const img = document.createElement('img');
-      img.className = 'le-img';
-      const imgUrl = it.url || it.preview || '';
-      img.src = imgUrl; img.alt = it.name || '';
+        const img = document.createElement('img');
+        img.className = 'le-img';
+        const imgUrl = it.url || it.preview || '';
+        img.src = imgUrl; img.alt = it.name || '';
 
-      const dn = displayNameFor(it);
-      let name;
-      if (dn) {
-        name = document.createElement('div');
-        name.className = 'le-name';
-        name.textContent = dn;
-      }
-
-      const pinBtn = document.createElement('button');
-      pinBtn.className = 'le-pin-btn' + (it.pinned ? ' active' : '');
-      pinBtn.title = it.pinned ? '取消固定' : '固定到顶部';
-      pinBtn.setAttribute('aria-label', pinBtn.title);
-      pinBtn.appendChild(createPinSvg(!!it.pinned));
-      pinBtn.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        await window.localEmote.togglePin(it.absPath || it.path);
-        dbg('togglePin recent:', it.absPath || it.path);
-        renderRecentGrid();
-      });
-
-      card.appendChild(pinBtn);
-      card.appendChild(img);
-      if (name) card.appendChild(name);
-      card.addEventListener('click', async (ev) => {
-        const p = it.absPath || it.path;
-        dbg('recent click:', p);
-        const isGif = /\.gif$/i.test(String(p || ''));
-        let inserted = false;
-        let sentOk = false;
-        let cfg = null;
-        let sendMode = 'multi';
-        try {
-          cfg = window.localEmote.getConfig ? window.localEmote.getConfig() : null;
-          if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode;
-        } catch (e) { dbg('recent click: read config error', e && e.message); }
-
-        // 尝试获取环境
-        let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-        let peer = await derivePeerAsync();
-        try { ensureSelectionAtEditorEnd(getEditorEl()); } catch (_) {}
-
-        // 判定是否必须走 Native：配置为native、按住Alt、或者文件是GIF
-        const needNative = (sendMode === 'native' || (ev && ev.altKey) || isGif);
-        const preferNative = (sendMode === 'image' && !isGif);
-
-        if ((needNative || preferNative) && (!lt || !peer)) {
-          // 重试机制：等待 peer 或 lt 就绪
-          try {
-            const end = Date.now() + 2000;
-            while (Date.now() < end) {
-              await new Promise(r => setTimeout(r, 100));
-              lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-              peer = await derivePeerAsync();
-              if ((lt || typeof window.leMainRequest === 'function') && peer) break;
-            }
-          } catch (_) {}
+        const dn = displayNameFor(it);
+        let name;
+        if (dn) {
+          name = document.createElement('div');
+          name.className = 'le-name';
+          name.textContent = dn;
         }
 
-        try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
-        
-        const canNative = !!(peer && (lt || typeof window.leMainRequest === 'function'));
-        dbg('recent click: needNative=', needNative, 'canNative=', canNative, 'peer=', peer);
+        const pinBtn = document.createElement('button');
+        pinBtn.className = 'le-pin-btn' + (it.pinned ? ' active' : '');
+        pinBtn.title = it.pinned ? '取消固定' : '固定到顶部';
+        pinBtn.setAttribute('aria-label', pinBtn.title);
+        pinBtn.appendChild(createPinSvg(!!it.pinned));
+        pinBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          await window.localEmote.togglePin(it.absPath || it.path);
+          dbg('togglePin recent:', it.absPath || it.path);
+          renderRecentGrid();
+        });
 
-        if (needNative && !canNative) {
-          // 必须原生发送但环境缺失
-          dbg('recent click: native required but env missing');
-          alert('无法获取当前会话信息，请尝试切换会话或重启 QQ');
-          return;
-        }
+        card.appendChild(pinBtn);
+        card.appendChild(img);
+        if (name) card.appendChild(name);
+        card.addEventListener('click', async (ev) => {
+          const p = it.absPath || it.path;
+          dbg('recent click:', p);
+          const isGif = /\.gif$/i.test(String(p || ''));
+          let inserted = false;
+          let sentOk = false;
+          let cfg = null;
+          let sendMode = 'multi';
+          try {
+            cfg = window.localEmote.getConfig ? window.localEmote.getConfig() : null;
+            if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode;
+          } catch (e) { dbg('recent click: read config error', e && e.message); }
 
-        if (needNative && canNative) {
-          dbg('recent click: native mode execute');
-          try {
-            // Standard/Native mode: picSubType=1, asFace=true
-            const picSubType = 1;
-            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: true }]);
-            sentOk = true;
-            dbg('recent click: native send ok');
-            try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            return;
-          } catch (e) {
-            sentOk = false;
-            dbg('recent click: native send error', e && e.message);
+          // 尝试获取环境
+          let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
+          let peer = await derivePeerAsync();
+          try { ensureSelectionAtEditorEnd(getEditorEl()); } catch (_) {}
+
+          // 判定是否必须走 Native：配置为native、按住Alt、或者文件是GIF
+          const needNative = (sendMode === 'native' || (ev && ev.altKey) || isGif);
+          const preferNative = (sendMode === 'image' && !isGif);
+
+          if ((needNative || preferNative) && (!lt || !peer)) {
+            // 重试机制：等待 peer 或 lt 就绪
+            try {
+              const end = Date.now() + 2000;
+              while (Date.now() < end) {
+                await new Promise(r => setTimeout(r, 100));
+                lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
+                peer = await derivePeerAsync();
+                if ((lt || typeof window.leMainRequest === 'function') && peer) break;
+              }
+            } catch (_) {}
           }
-          inserted = false;
-        } else if (preferNative && canNative) {
-          dbg('recent click: image mode native send');
-          try {
-            // Image mode: picSubType=0, asFace=false
-            const picSubType = 0;
-            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: false }]);
-            sentOk = true;
-            dbg('recent click: image native send ok');
-            try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            return;
-          } catch (e) {
-            sentOk = false;
-            dbg('recent click: image native send error', e && e.message);
-          }
-          inserted = false;
-        } else {
+
+          try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
+          
+          const canNative = !!(peer && (lt || typeof window.leMainRequest === 'function'));
+          dbg('recent click: needNative=', needNative, 'canNative=', canNative, 'peer=', peer);
+
           if (needNative && !canNative) {
+            // 必须原生发送但环境缺失
             dbg('recent click: native required but env missing');
-            // GIF 环境缺失，不得不降级，但大概率是静态图
+            alert('无法获取当前会话信息，请尝试切换会话或重启 QQ');
+            return;
           }
-          dbg('recent click: multi/image mode or fallback');
-          inserted = tryInsertImageToEditor(p);
-          dbg('recent click: tryInsertImageToEditor first ret=', inserted);
-          if (inserted) { sentOk = true; }
-          if (!inserted) {
+
+          if (needNative && canNative) {
+            dbg('recent click: native mode execute');
             try {
-              const ed = getEditorEl(); try { ed && ed.focus(); } catch (_) {}
-              const res = await window.localEmote.sendEmote(p);
-              inserted = !!(res && res.ok);
-              sentOk = inserted;
-              dbg('recent click: sendEmote ret=', inserted);
-            } catch (e) { inserted = false; dbg('recent click: sendEmote error', e && e.message); }
-          }
-        }
-        try { if (sentOk) window.localEmote.markRecent(p); } catch (_) {}
-        // 仅非多发模式下快速发送；多发模式只插入到编辑器等待手动确认
-        const wantQuick = (sendMode !== 'multi');
-        dbg('recent click: wantQuick=', wantQuick, 'inserted=', inserted);
-        
-        if (wantQuick) {
-          // 将查找范围收敛到编辑器所在的对话容器，避免误点其他会话的“发送”
-          let scope = document;
-          let edRef = null;
-          try {
-            edRef = getEditorEl();
-            if (edRef) {
-              const candidate = edRef.closest('.message-input-area, .chat-input-area, .q-input-area, .container, [class*="input"], [class*="editor"], [class*="chat"], [class*="msg"], [class*="message"]');
-              if (candidate) scope = candidate;
+              // Standard/Native mode: picSubType=1, asFace=true
+              const picSubType = 1;
+              await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: true }]);
+              sentOk = true;
+              dbg('recent click: native send ok');
+              try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
+              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
+              return;
+            } catch (e) {
+              sentOk = false;
+              dbg('recent click: native send error', e && e.message);
             }
-          } catch (_) {}
-          let sendBtn = findSendButton(scope) || findSendButton(document);
-          if (sendBtn && inserted) {
-            try { await animateEmoteFlight(img, sendBtn); } catch (_) {}
-            // 关闭面板，避免捕获回车导致再次点击卡片
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
+            inserted = false;
+          } else if (preferNative && canNative) {
+            dbg('recent click: image mode native send');
             try {
+              // Image mode: picSubType=0, asFace=false
+              const picSubType = 0;
+              await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: false }]);
+              sentOk = true;
+              dbg('recent click: image native send ok');
+              try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
+              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
+              return;
+            } catch (e) {
+              sentOk = false;
+              dbg('recent click: image native send error', e && e.message);
+            }
+            inserted = false;
+          } else {
+            if (needNative && !canNative) {
+              dbg('recent click: native required but env missing');
+              // GIF 环境缺失，不得不降级，但大概率是静态图
+            }
+            dbg('recent click: multi/image mode or fallback');
+            inserted = tryInsertImageToEditor(p);
+            dbg('recent click: tryInsertImageToEditor first ret=', inserted);
+            if (inserted) { sentOk = true; }
+            if (!inserted) {
+              try {
+                const ed = getEditorEl(); try { ed && ed.focus(); } catch (_) {}
+                const res = await window.localEmote.sendEmote(p);
+                inserted = !!(res && res.ok);
+                sentOk = inserted;
+                dbg('recent click: sendEmote ret=', inserted);
+              } catch (e) { inserted = false; dbg('recent click: sendEmote error', e && e.message); }
+            }
+          }
+          try { if (sentOk) window.localEmote.markRecent(p); } catch (_) {}
+          // 仅非多发模式下快速发送；多发模式只插入到编辑器等待手动确认
+          const wantQuick = (sendMode !== 'multi');
+          dbg('recent click: wantQuick=', wantQuick, 'inserted=', inserted);
+          
+          if (wantQuick) {
+            // 将查找范围收敛到编辑器所在的对话容器，避免误点其他会话的“发送”
+            let scope = document;
+            let edRef = null;
+            try {
+              edRef = getEditorEl();
+              if (edRef) {
+                const candidate = edRef.closest('.message-input-area, .chat-input-area, .q-input-area, .container, [class*="input"], [class*="editor"], [class*="chat"], [class*="msg"], [class*="message"]');
+                if (candidate) scope = candidate;
+              }
+            } catch (_) {}
+            let sendBtn = findSendButton(scope) || findSendButton(document);
+            if (sendBtn && inserted) {
+              try { await animateEmoteFlight(img, sendBtn); } catch (_) {}
+              // 关闭面板，避免捕获回车导致再次点击卡片
+              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
+              try {
   // 更拟真的点击序列
   sendBtn.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
   sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
@@ -2927,81 +2951,93 @@ function buildOverlay() {
   sendBtn.click();
   dbg('recent click: sendBtn clicked');
 } catch (_) {}
-          } else if (inserted && edRef) {
-            // 已插入内容：仅回车发送，避免重复粘贴
-            try { edRef.focus(); } catch (_) {}
-            // 关闭面板，避免捕获回车导致再次点击卡片
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            const ok = pressEnterToSend(edRef);
-            dbg('recent click: pressEnterToSend ret=', ok, '(no re-paste)');
-          } else if (edRef) {
-            // 未插入成功：尝试使用剪贴板粘贴 + 回车进行兜底
-            try { edRef.focus(); } catch (_) {}
-            let pasted = false;
+            } else if (inserted && edRef) {
+              // 已插入内容：仅回车发送，避免重复粘贴
+              try { edRef.focus(); } catch (_) {}
+              // 关闭面板，避免捕获回车导致再次点击卡片
+              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
+              const ok = pressEnterToSend(edRef);
+              dbg('recent click: pressEnterToSend ret=', ok, '(no re-paste)');
+            } else if (edRef) {
+              // 未插入成功：尝试使用剪贴板粘贴 + 回车进行兜底
+              try { edRef.focus(); } catch (_) {}
+              let pasted = false;
+              try {
+                const res2 = await window.localEmote.sendEmote(p);
+                pasted = !!(res2 && res2.ok);
+                dbg('recent click: sendEmote fallback ret=', pasted);
+              } catch (e) { dbg('recent click: sendEmote fallback error', e && e.message); }
+              // 关闭面板，避免捕获回车导致再次点击卡片
+              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
+              const ok = pressEnterToSend(edRef);
+              dbg('recent click: pressEnterToSend ret=', ok);
+            } else { dbg('recent click: sendBtn not ready or not inserted'); }
+          } else {
+            // 非快速发送（如多发模式），给出视觉反馈并聚焦编辑器，便于继续连点
             try {
-              const res2 = await window.localEmote.sendEmote(p);
-              pasted = !!(res2 && res2.ok);
-              dbg('recent click: sendEmote fallback ret=', pasted);
-            } catch (e) { dbg('recent click: sendEmote fallback error', e && e.message); }
-            // 关闭面板，避免捕获回车导致再次点击卡片
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            const ok = pressEnterToSend(edRef);
-            dbg('recent click: pressEnterToSend ret=', ok);
-          } else { dbg('recent click: sendBtn not ready or not inserted'); }
-        } else {
-          // 非快速发送（如多发模式），给出视觉反馈并聚焦编辑器，便于继续连点
-          try {
-            const edOnly = getEditorEl();
-            if (edOnly && inserted) {
-              try { edOnly.focus(); } catch (_) {}
-              try { await animateEmoteFlight(img, edOnly); } catch (_) {}
-              dbg('recent click: inserted (multi), focused editor');
-            }
-          } catch (_) {}
-        }
-      });
-      recentGrid.appendChild(card);
+              const edOnly = getEditorEl();
+              if (edOnly && inserted) {
+                try { edOnly.focus(); } catch (_) {}
+                try { await animateEmoteFlight(img, edOnly); } catch (_) {}
+                dbg('recent click: inserted (multi), focused editor');
+              }
+            } catch (_) {}
+          }
+        });
+        recentGrid.appendChild(card);
+      }
+    })();
+    try { await renderRecentGridPromise; } finally {
+      renderRecentGridLock = false;
+      renderRecentGridPromise = null;
+      if (renderRecentGridQueued) {
+        renderRecentGridQueued = false;
+        setTimeout(renderRecentGrid, RENDER_RECENT_THROTTLE);
+      }
     }
   }
 
   async function renderGrid() {
-    dbg('renderGrid: start, selectedCat=', selectedCat);
-    grid.innerHTML = '';
-    const cat = selectedCat;
-    if (!cat) { dbg('renderGrid: no category'); return; }
-    let all = [];
-    if (typeof cat === 'string' && cat.startsWith('__dir__|')) {
-      const dir = cat.slice('__dir__|'.length);
-      try { all = await window.localEmote.listImagesInDir(dir); dbg('renderGrid: dir', dir, 'items', all.length); } catch (e) { dbg('renderGrid: listImagesInDir error', e && e.message); all = []; }
-    } else {
-      try { all = await window.localEmote.listEmojis(cat); dbg('renderGrid: category', cat, 'items', all.length); } catch (e) { dbg('renderGrid: listEmojis error', e && e.message); all = []; }
-    }
-    currentList = all;
-    for (let idx = 0; idx < currentList.length; idx++) {
-      const it = currentList[idx];
-      const card = document.createElement('div');
-      card.className = 'le-card';
-      card.setAttribute('role', 'option');
-      card.setAttribute('tabindex', '-1');
-      card.dataset.index = String(idx);
-
-      const img = document.createElement('img');
-      img.className = 'le-img';
-      const imgUrl = it.url || it.preview || '';
-      img.src = imgUrl;
-      img.alt = it.name || '';
-
-      const dn = displayNameFor(it);
-      let name;
-      if (dn) {
-        name = document.createElement('div');
-        name.className = 'le-name';
-        name.textContent = dn;
+    if (renderGridLock) { renderGridQueued = true; return renderGridPromise; }
+    renderGridLock = true;
+    renderGridPromise = (async () => {
+      dbg('renderGrid: start, selectedCat=', selectedCat);
+      grid.innerHTML = '';
+      const cat = selectedCat;
+      if (!cat) { dbg('renderGrid: no category'); return; }
+      let all = [];
+      if (typeof cat === 'string' && cat.startsWith('__dir__|')) {
+        const dir = cat.slice('__dir__|'.length);
+        try { all = await window.localEmote.listImagesInDir(dir); dbg('renderGrid: dir', dir, 'items', all.length); } catch (e) { dbg('renderGrid: listImagesInDir error', e && e.message); all = []; }
+      } else {
+        try { all = await window.localEmote.listEmojis(cat); dbg('renderGrid: category', cat, 'items', all.length); } catch (e) { dbg('renderGrid: listEmojis error', e && e.message); all = []; }
       }
+      currentList = all;
+      for (let idx = 0; idx < currentList.length; idx++) {
+        const it = currentList[idx];
+        const card = document.createElement('div');
+        card.className = 'le-card';
+        card.setAttribute('role', 'option');
+        card.setAttribute('tabindex', '-1');
+        card.dataset.index = String(idx);
 
-      card.appendChild(img);
-      if (name) card.appendChild(name);
-      card.addEventListener('click', async (ev) => {
+        const img = document.createElement('img');
+        img.className = 'le-img';
+        const imgUrl = it.url || it.preview || '';
+        img.src = imgUrl;
+        img.alt = it.name || '';
+
+        const dn = displayNameFor(it);
+        let name;
+        if (dn) {
+          name = document.createElement('div');
+          name.className = 'le-name';
+          name.textContent = dn;
+        }
+
+        card.appendChild(img);
+        if (name) card.appendChild(name);
+        card.addEventListener('click', async (ev) => {
         const p = it.absPath || it.path;
         dbg('grid click:', p, 'mode=', (window.localEmote.getConfig && window.localEmote.getConfig().sendMode));
         const isGif = /\.gif$/i.test(String(p || ''));
@@ -3157,10 +3193,19 @@ function buildOverlay() {
             }
           } catch (_) {}
         }
-      });
-      grid.appendChild(card);
+        });
+        grid.appendChild(card);
+      }
+      applyActiveAfterRender();
+    })();
+    try { await renderGridPromise; } finally {
+      renderGridLock = false;
+      renderGridPromise = null;
+      if (renderGridQueued) {
+        renderGridQueued = false;
+        setTimeout(renderGrid, RENDER_GRID_THROTTLE);
+      }
     }
-    applyActiveAfterRender();
   }
 
   function renderPacksBar() {
@@ -3198,27 +3243,39 @@ function buildOverlay() {
   }
 
   async function loadPacks() {
-    dbg('loadPacks: start');
-    try {
-      const cfg = window.localEmote.getConfig();
-      const root = cfg && cfg.rootDir;
-      dbg('loadPacks: root=', root);
-      packsCache = root ? await window.localEmote.listPacksInDir(root) : [];
-      dbg('loadPacks: packs length=', Array.isArray(packsCache) ? packsCache.length : -1);
-      // 选择默认包：优先使用 cfg.lastCategory（必须是包），否则第一个
-      const keys = packsCache.map(p => `__dir__|${p.dir || p.path || ''}`);
-      const last = (cfg && cfg.lastCategory) || '';
-      dbg('loadPacks: keys', keys, 'last', last, 'selected(before)', selectedCat);
-      if (last && last.startsWith('__dir__|') && keys.includes(last)) selectedCat = last;
-      else if (!keys.includes(selectedCat)) selectedCat = keys[0] || null;
-      dbg('loadPacks: selected(after)', selectedCat);
-    } catch (e) {
-      dbg('loadPacks: error', e && e.message);
-      packsCache = [];
+    if (loadPacksLock) { loadPacksQueued = true; return loadPacksPromise; }
+    loadPacksLock = true;
+    loadPacksPromise = (async () => {
+      dbg('loadPacks: start');
+      try {
+        const cfg = window.localEmote.getConfig();
+        const root = cfg && cfg.rootDir;
+        dbg('loadPacks: root=', root);
+        packsCache = root ? await window.localEmote.listPacksInDir(root) : [];
+        dbg('loadPacks: packs length=', Array.isArray(packsCache) ? packsCache.length : -1);
+        // 选择默认包：优先使用 cfg.lastCategory（必须是包），否则第一个
+        const keys = packsCache.map(p => `__dir__|${p.dir || p.path || ''}`);
+        const last = (cfg && cfg.lastCategory) || '';
+        dbg('loadPacks: keys', keys, 'last', last, 'selected(before)', selectedCat);
+        if (last && last.startsWith('__dir__|') && keys.includes(last)) selectedCat = last;
+        else if (!keys.includes(selectedCat)) selectedCat = keys[0] || null;
+        dbg('loadPacks: selected(after)', selectedCat);
+      } catch (e) {
+        dbg('loadPacks: error', e && e.message);
+        packsCache = [];
+      }
+      renderPacksBar();
+      updateMainTitle();
+      dbg('loadPacks: done, packsCache=', Array.isArray(packsCache) ? packsCache.length : -1, 'selectedCat', selectedCat);
+    })();
+    try { await loadPacksPromise; } finally {
+      loadPacksLock = false;
+      loadPacksPromise = null;
+      if (loadPacksQueued) {
+        loadPacksQueued = false;
+        setTimeout(loadPacks, LOAD_PACKS_THROTTLE);
+      }
     }
-    renderPacksBar();
-    updateMainTitle();
-    dbg('loadPacks: done, packsCache=', Array.isArray(packsCache) ? packsCache.length : -1, 'selectedCat', selectedCat);
   }
 
   function onKeydown(e) {
@@ -3254,26 +3311,39 @@ function buildOverlay() {
   }
 
   async function show(anchorRect) {
-    dbg('show overlay: anchorRect', anchorRect);
-    await loadPacks();
-    await renderRecentGrid();
-    wrap.style.display = 'block';
-    try {
-      const cc = window.localEmote.getConfig();
-      const n = Number.isFinite(cc.gridCols) ? Math.max(2, Math.min(12, Math.floor(cc.gridCols))) : 6;
-      grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
-      recentGrid.style.gridTemplateColumns = `repeat(${Math.max(2, Math.min(12, n))}, 1fr)`;
-      dbg('show overlay: cols', n);
-    } catch (_) {}
-    position(anchorRect);
-    setTimeout(() => document.addEventListener('mousedown', onDocDown, true), 0);
-    window.addEventListener('resize', onResize, { passive: true });
-    window.addEventListener('scroll', onResize, { passive: true });
-    document.addEventListener('keydown', onKeydown, true);
-    await renderGrid();
-    updateMainTitle();
-    applyActiveAfterRender();
-    dbg('show overlay: done');
+    if (anchorRect) showAnchorRect = anchorRect;
+    if (showLock) { showQueued = true; return showPromise; }
+    showLock = true;
+    showPromise = (async () => {
+      dbg('show overlay: anchorRect', anchorRect);
+      await loadPacks();
+      await renderRecentGrid();
+      wrap.style.display = 'block';
+      try {
+        const cc = window.localEmote.getConfig();
+        const n = Number.isFinite(cc.gridCols) ? Math.max(2, Math.min(12, Math.floor(cc.gridCols))) : 6;
+        grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+        recentGrid.style.gridTemplateColumns = `repeat(${Math.max(2, Math.min(12, n))}, 1fr)`;
+        dbg('show overlay: cols', n);
+      } catch (_) {}
+      position(anchorRect);
+      setTimeout(() => document.addEventListener('mousedown', onDocDown, true), 0);
+      window.addEventListener('resize', onResize, { passive: true });
+      window.addEventListener('scroll', onResize, { passive: true });
+      document.addEventListener('keydown', onKeydown, true);
+      await renderGrid();
+      updateMainTitle();
+      applyActiveAfterRender();
+      dbg('show overlay: done');
+    })();
+    try { await showPromise; } finally {
+      showLock = false;
+      showPromise = null;
+      if (showQueued) {
+        showQueued = false;
+        setTimeout(() => show(showAnchorRect), SHOW_THROTTLE);
+      }
+    }
   }
   function hide() {
     dbg('hide overlay');
@@ -3308,19 +3378,31 @@ function buildOverlay() {
 
   // 新增：在不关闭面板的情况下刷新布局与内容（用于设置变更实时生效）
   async function refresh() {
-    dbg('overlay refresh: start');
-    try {
-      const cc = window.localEmote.getConfig();
-      const n = Number.isFinite(cc.gridCols) ? Math.max(2, Math.min(12, Math.floor(cc.gridCols))) : 6;
-      grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
-      recentGrid.style.gridTemplateColumns = `repeat(${Math.max(2, Math.min(12, n))}, 1fr)`;
-      dbg('overlay refresh: cols', n);
-    } catch (_) {}
-    await renderRecentGrid();
-    await renderGrid();
-    dbg('overlay refresh: grids rendered, updating title and active');
-    updateMainTitle();
-    applyActiveAfterRender();
+    if (refreshLock) { refreshQueued = true; return refreshPromise; }
+    refreshLock = true;
+    refreshPromise = (async () => {
+      dbg('overlay refresh: start');
+      try {
+        const cc = window.localEmote.getConfig();
+        const n = Number.isFinite(cc.gridCols) ? Math.max(2, Math.min(12, Math.floor(cc.gridCols))) : 6;
+        grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+        recentGrid.style.gridTemplateColumns = `repeat(${Math.max(2, Math.min(12, n))}, 1fr)`;
+        dbg('overlay refresh: cols', n);
+      } catch (_) {}
+      await renderRecentGrid();
+      await renderGrid();
+      dbg('overlay refresh: grids rendered, updating title and active');
+      updateMainTitle();
+      applyActiveAfterRender();
+    })();
+    try { await refreshPromise; } finally {
+      refreshLock = false;
+      refreshPromise = null;
+      if (refreshQueued) {
+        refreshQueued = false;
+        setTimeout(refresh, REFRESH_THROTTLE);
+      }
+    }
   }
 
   document.body.appendChild(wrap);
