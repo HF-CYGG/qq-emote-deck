@@ -17,7 +17,7 @@ function extname(p) {
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".apng", ".bmp"]);
 
 // 支持的配置键新增 pinned、hotkey、gridCols、showFileName、sendMode、debug
-const CONFIG_KEYS = new Set(["rootDir", "recent", "lastCategory", "pinned", "hotkey", "gridCols", "showFileName", "sendMode", "debug", "recentLimit", "pinLimit", "imageContextMenu"]);
+const CONFIG_KEYS = new Set(["rootDir", "recent", "lastCategory", "pinned", "hotkey", "gridCols", "showFileName", "sendMode", "debug", "recentLimit", "pinLimit", "imageContextMenu", "hoverPreview"]);
 const RECENT_LIMIT = 60;
 const PIN_LIMIT = 12;
 
@@ -47,7 +47,7 @@ function writeConfigSyncIPC(cfg) {
 function hasMeaningful(cfg, def) {
   try {
     if (!cfg || typeof cfg !== 'object') return false;
-    if (!def) def = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true };
+    if (!def) def = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true, hoverPreview: true };
     if (cfg.rootDir && typeof cfg.rootDir === 'string') return true;
     if (Array.isArray(cfg.recent) && cfg.recent.length) return true;
     if (Array.isArray(cfg.pinned) && cfg.pinned.length) return true;
@@ -61,12 +61,13 @@ function hasMeaningful(cfg, def) {
     if (Number.isFinite(cfg.recentLimit) && cfg.recentLimit !== def.recentLimit) return true;
     if (Number.isFinite(cfg.pinLimit) && cfg.pinLimit !== def.pinLimit) return true;
     if (typeof cfg.imageContextMenu === 'boolean' && cfg.imageContextMenu !== def.imageContextMenu) return true;
+    if (typeof cfg.hoverPreview === 'boolean' && cfg.hoverPreview !== def.hoverPreview) return true;
     return false;
   } catch (_) { return false; }
 }
 
 function getConfig() {
-  const defaultConfig = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true };
+  const defaultConfig = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true, hoverPreview: true };
 
   // 分别读取三个来源（都做 sanitize，避免脏数据污染）
   const fromIPC = sanitizeConfig(readConfigSyncIPC(defaultConfig) || {});
@@ -88,7 +89,7 @@ function getConfig() {
 }
 
 function sanitizeConfig(input) {
-  const out = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true };
+  const out = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true, hoverPreview: true };
   if (input && typeof input === "object") {
     // 先确定上限
     let rlim = 60;
@@ -129,6 +130,7 @@ function sanitizeConfig(input) {
     }
     out.debug = !!input.debug;
     out.imageContextMenu = typeof input.imageContextMenu === "boolean" ? input.imageContextMenu : true;
+    out.hoverPreview = typeof input.hoverPreview === "boolean" ? input.hoverPreview : true;
   }
   return out;
 }

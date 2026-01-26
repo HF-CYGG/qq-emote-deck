@@ -801,6 +801,27 @@ function injectLEStylesOnce() {
     max-width: 100%; overflow: hidden; text-overflow: ellipsis;
   }
 
+  #local-emote-hover-preview {
+    position: fixed;
+    display: none;
+    z-index: 10000;
+    padding: 6px;
+    border-radius: 10px;
+    border: 1px solid var(--le-border);
+    background: var(--le-bg);
+    box-shadow: 0 12px 30px rgba(0,0,0,.22);
+    pointer-events: none;
+  }
+  #local-emote-hover-preview img {
+    width: 160px;
+    height: 160px;
+    object-fit: contain;
+    display: block;
+    border-radius: 8px;
+    background: var(--le-input-bg);
+    border: 1px solid var(--le-image-border);
+  }
+
   /* 滚动条 */
   #local-emote-overlay .le-grid::-webkit-scrollbar { width: 8px; height: 8px; }
   #local-emote-overlay .le-grid::-webkit-scrollbar-thumb { background-color: rgba(0,0,0,.25); border-radius: 8px; }
@@ -2704,6 +2725,61 @@ function buildOverlay() {
   let refreshPromise = null;
   const REFRESH_THROTTLE = 200;
 
+  let preview = document.getElementById('local-emote-hover-preview');
+  let previewImg = preview ? preview.querySelector('img') : null;
+  if (!preview) {
+    preview = document.createElement('div');
+    preview.id = 'local-emote-hover-preview';
+    previewImg = document.createElement('img');
+    preview.appendChild(previewImg);
+    document.body.appendChild(preview);
+  } else if (!previewImg) {
+    previewImg = document.createElement('img');
+    preview.appendChild(previewImg);
+  }
+  let previewVisible = false;
+  let previewSrc = '';
+  function updatePreviewPos(ev) {
+    if (!preview || !previewVisible || !ev) return;
+    const pad = 12;
+    let left = ev.clientX + pad;
+    let top = ev.clientY + pad;
+    const rect = preview.getBoundingClientRect();
+    if (left + rect.width + pad > window.innerWidth) {
+      left = Math.max(pad, ev.clientX - rect.width - pad);
+    }
+    if (top + rect.height + pad > window.innerHeight) {
+      top = Math.max(pad, window.innerHeight - rect.height - pad);
+    }
+    preview.style.left = `${left}px`;
+    preview.style.top = `${top}px`;
+  }
+  function showPreview(src, ev) {
+    try {
+      const cfg = window.localEmote.getConfig();
+      if (cfg && cfg.hoverPreview === false) return;
+    } catch (_) {}
+    if (!preview || !previewImg || !src) return;
+    if (previewSrc !== src) {
+      previewImg.src = src;
+      previewSrc = src;
+    }
+    preview.style.display = 'block';
+    previewVisible = true;
+    updatePreviewPos(ev);
+  }
+  function hidePreview() {
+    if (!preview) return;
+    preview.style.display = 'none';
+    previewVisible = false;
+  }
+  function bindPreview(card, src) {
+    if (!card || !src) return;
+    card.addEventListener('mouseenter', (ev) => showPreview(src, ev));
+    card.addEventListener('mousemove', (ev) => updatePreviewPos(ev));
+    card.addEventListener('mouseleave', () => hidePreview());
+  }
+
   // 新增：根据当前选中分组更新主标题（根目录=“本地表情”，子文件夹=文件夹名）
   function updateMainTitle() {
     try {
@@ -2799,6 +2875,7 @@ function buildOverlay() {
         img.className = 'le-img';
         const imgUrl = it.url || it.preview || '';
         img.src = imgUrl; img.alt = it.name || '';
+        bindPreview(card, imgUrl);
 
         const dn = displayNameFor(it);
         let name;
@@ -3026,6 +3103,7 @@ function buildOverlay() {
         const imgUrl = it.url || it.preview || '';
         img.src = imgUrl;
         img.alt = it.name || '';
+        bindPreview(card, imgUrl);
 
         const dn = displayNameFor(it);
         let name;
@@ -3348,6 +3426,7 @@ function buildOverlay() {
   function hide() {
     dbg('hide overlay');
     wrap.style.display = 'none';
+    hidePreview();
     document.removeEventListener('mousedown', onDocDown, true);
     window.removeEventListener('resize', onResize);
     window.removeEventListener('scroll', onResize);
@@ -3843,6 +3922,7 @@ export const onSettingWindowCreated = (view) => {
           const showNameSwitch = view.querySelector('#le-show-filename');
           const debugSwitch = view.querySelector('#le-debug');
           const imageContextSwitch = view.querySelector('#le-image-contextmenu');
+          const hoverPreviewSwitch = view.querySelector('#le-hover-preview');
 
           if (versionEl) {
             try { versionEl.textContent = (LiteLoader.plugins?.["local_emotes"]?.manifest?.version) || ''; } catch (_) {}
@@ -3886,6 +3966,17 @@ export const onSettingWindowCreated = (view) => {
               newCfg.imageContextMenu = !is;
               window.localEmote.setConfig(newCfg);
               try { dbg('config.imageContextMenu set to', newCfg.imageContextMenu); } catch (_) {}
+            });
+          }
+          if (hoverPreviewSwitch) {
+            if (cfg.hoverPreview !== false) hoverPreviewSwitch.setAttribute('is-active', ''); else hoverPreviewSwitch.removeAttribute('is-active');
+            hoverPreviewSwitch.addEventListener('click', () => {
+              const is = hoverPreviewSwitch.hasAttribute('is-active');
+              if (is) hoverPreviewSwitch.removeAttribute('is-active'); else hoverPreviewSwitch.setAttribute('is-active', '');
+              const newCfg = window.localEmote.getConfig();
+              newCfg.hoverPreview = !is;
+              window.localEmote.setConfig(newCfg);
+              try { dbg('config.hoverPreview set to', newCfg.hoverPreview); } catch (_) {}
             });
           }
 

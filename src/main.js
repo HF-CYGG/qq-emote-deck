@@ -157,7 +157,7 @@ function pushCap(dir, channel, args, where, winId) {
 }
 
 function defaultConfig() {
-  return { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", recentLimit: 60, pinLimit: 12, imageContextMenu: true };
+  return { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", recentLimit: 60, pinLimit: 12, imageContextMenu: true, hoverPreview: true };
 }
 function readConfigSync() {
   try {

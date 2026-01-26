@@ -43,7 +43,7 @@
         <setting-item data-direction="column">
           <div>
             <setting-text>本地表情目录</setting-text>
-            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial; line-clamp: initial;">
               选择一个包含图片的文件夹作为表情库，插件会读取其中的表情文件进行预览与发送
             </setting-text>
             <div class="input-group">
@@ -59,7 +59,7 @@
         <setting-item data-direction="row">
           <div>
             <setting-text>调试日志</setting-text>
-            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial; line-clamp: initial;">
               开启后，会在控制台输出调试信息，便于排查问题
             </setting-text>
           </div>
@@ -69,7 +69,7 @@
         <setting-item data-direction="row">
           <div>
             <setting-text>显示文件名</setting-text>
-            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial; line-clamp: initial;">
               开启后，卡片下方会显示文件名（最长 6 个字）
             </setting-text>
           </div>
@@ -79,7 +79,7 @@
         <setting-item data-direction="row">
           <div>
             <setting-text>图片右键菜单</setting-text>
-            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial; line-clamp: initial;">
               在图片右键菜单中显示“保存到本地表情”
             </setting-text>
           </div>
@@ -88,8 +88,18 @@
 
         <setting-item data-direction="row">
           <div>
+            <setting-text>悬停预览</setting-text>
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial; line-clamp: initial;">
+              鼠标悬停在表情包上时，在右侧显示大图预览
+            </setting-text>
+          </div>
+          <setting-switch id="le-hover-preview"></setting-switch>
+        </setting-item>
+
+        <setting-item data-direction="row">
+          <div>
             <setting-text>发送模式</setting-text>
-            <setting-text data-type="secondary" style="-webkit-line-clamp: initial">
+            <setting-text data-type="secondary" style="-webkit-line-clamp: initial; line-clamp: initial;">
               选择表情的发送方式：表情包多发（粘贴插入，可一次连续插入多张）、图片发送（以图片消息发送单张表情包）、标准表情（使用原生表情包机制）
             </setting-text>
           </div>
