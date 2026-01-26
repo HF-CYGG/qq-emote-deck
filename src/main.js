@@ -26,6 +26,42 @@ const CONFIG_FILE = path.join(PLUGIN_DATA_DIR, "config.json");
 // 新增：运行时 IPC 捕获状态与工具
 const CAPTURE_STATE = { enabled: false, up: [], down: [] };
 function setCaptureEnabled(v) { CAPTURE_STATE.enabled = !!v; }
+function safeStringify(obj) {
+  const cache = new WeakSet();
+  return JSON.stringify(obj, (key, value) => {
+    if (typeof value === "object" && value !== null) {
+      if (cache.has(value)) return "[Circular]";
+      cache.add(value);
+    }
+    if (typeof value === "bigint") return value.toString();
+    if (value instanceof Error) return { message: value.message, stack: value.stack };
+    return value;
+  }, 2);
+}
+function nowTS() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+    " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) +
+    "." + String(d.getMilliseconds()).padStart(3, "0")
+  );
+}
+function redact(obj) {
+  const SENSITIVE_KEYS = ["token", "pwd", "password", "cookie", "sid", "skey", "pskey", "bkn", "csrf"];
+  function walk(val) {
+    if (!val || typeof val !== "object") return val;
+    if (Array.isArray(val)) return val.map(walk);
+    const out = {};
+    for (const k of Object.keys(val)) {
+      const v = val[k];
+      if (SENSITIVE_KEYS.includes(k.toLowerCase())) out[k] = "[REDACTED]";
+      else out[k] = walk(v);
+    }
+    return out;
+  }
+  try { return walk(obj); } catch { return obj; }
+}
 function safeCloneArgs(args) {
   try { return JSON.parse(JSON.stringify(args)); } catch (_) { return []; }
 }
@@ -53,6 +89,63 @@ function extractCmd(entryArgs) {
     }
   } catch (_) {}
   return undefined;
+}
+function extractPayload(entryArgs) {
+  try {
+    for (const a of entryArgs) {
+      if (!a || typeof a !== "object") continue;
+      if (a.payload || a.pb || a.body || a.params) return a.payload || a.pb || a.body || a.params;
+      const vals = Object.values(a);
+      for (const v of vals) {
+        if (v && typeof v === "object" && (v.payload || v.pb || v.body || v.params)) return v.payload || v.pb || v.body || v.params;
+      }
+    }
+  } catch (_) {}
+  return undefined;
+}
+function normalizePeer(candidate) {
+  if (!candidate || typeof candidate !== "object") return null;
+  const groupCode = candidate.groupCode || (candidate.header && candidate.header.groupCode);
+  let peerUid = candidate.peerUid || candidate.uid || candidate.uinStr || candidate.uin || groupCode;
+  const chatType = candidate.chatType || candidate.type || candidate.scene || candidate.category;
+  let chatTypeNum = Number(chatType);
+  if (groupCode && chatTypeNum === 1) chatTypeNum = 2;
+  if (!peerUid || !Number.isFinite(chatTypeNum)) return null;
+  const peer = { peerUid: String(peerUid), chatType: chatTypeNum, guildId: candidate.guildId || candidate.channelId || "" };
+  if (chatTypeNum === 2 && groupCode) peer.groupCode = String(groupCode);
+  return peer;
+}
+function extractPeerFromArgs(args) {
+  try {
+    const stack = [];
+    for (const a of args) {
+      if (a && typeof a === "object") stack.push(a);
+    }
+    const visited = new WeakSet();
+    let steps = 0;
+    while (stack.length && steps < 4000) {
+      steps++;
+      const obj = stack.pop();
+      if (!obj || typeof obj !== "object" || visited.has(obj)) continue;
+      visited.add(obj);
+      let candidate = null;
+      if (obj.peerUid || obj.chatType || obj.uid || obj.uin || obj.uinStr) candidate = obj;
+      else if (obj.peer) candidate = obj.peer;
+      else if (obj.talk) candidate = obj.talk;
+      else if (obj.target) candidate = obj.target;
+      else if (obj.chat) candidate = obj.chat;
+      else if (obj.dialog) candidate = obj.dialog;
+      if (candidate) {
+        const peer = normalizePeer(candidate);
+        if (peer) return { peer, raw: candidate };
+      }
+      for (const k of Object.keys(obj)) {
+        const v = obj[k];
+        if (v && typeof v === "object") stack.push(v);
+      }
+    }
+  } catch (_) {}
+  return null;
 }
 function pushCap(dir, channel, args, where, winId) {
   if (!CAPTURE_STATE.enabled) return;
@@ -151,14 +244,16 @@ function isValidImageMagic(buf) {
 
 function toLocalUrl(absPath) {
   try {
-    const abs = absPath.replace(/\\+/g, "/");
-    const profile = LiteLoader.path.profile.replace(/\\+/g, "/");
-    const root = LiteLoader.path.root.replace(/\\+/g, "/");
-    if (abs.startsWith(profile)) return "local://profile" + abs.slice(profile.length);
-    if (abs.startsWith(root)) return "local://root" + abs.slice(root.length);
-    // 兜底：尽量转为 root
-    return "local://root" + abs;
-  } catch (_) { return "local:///" + encodeURI(absPath.replace(/\\+/g, "/")); }
+    const abs = String(absPath || "").replace(/\\+/g, "/");
+    if (!abs) return "local:///";
+    const encoded = abs
+      .split("/")
+      .map((item) => encodeURIComponent(encodeURIComponent(item)))
+      .join("/");
+    return "local:///" + encoded;
+  } catch (_) {
+    return "local:///";
+  }
 }
 
 function resolveCategoryDir(name) {
@@ -363,7 +458,7 @@ ipcMain.handle("localEmote:clearIpcLog", async () => { CAPTURE_STATE.up = []; CA
 ipcMain.handle("localEmote:listPacksInDir", async (_e, dir) => listPacksInDir(dir));
 
 exports.onBrowserWindowCreated = (window) => {
-  // 新增：hook webContents，捕获上下行 IPC
+  // 新增：hook webContents，捕获上下行 IPC 及探测 Peer
   try {
     const wc = window.webContents;
     const winId = window.id;
@@ -371,7 +466,30 @@ exports.onBrowserWindowCreated = (window) => {
     if (wc && typeof wc.send === 'function') {
       const origSend = wc.send.bind(wc);
       wc.send = (channel, ...args) => {
+        // 1. Debug capture
         try { pushCap('down', channel, args, 'wc.send', winId); } catch (_) {}
+
+        // 2. Peer Probe (反向研究成果应用)
+        try {
+          if (typeof channel === 'string' && channel.startsWith('IPC_UP_')) {
+            const found = extractPeerFromArgs(args);
+            if (CAPTURE_STATE.enabled) {
+              const payload = extractPayload(args);
+              const entry = {
+                ts: nowTS(),
+                channel,
+                cmdName: extractCmd(args),
+                preview: String(safeStringify(redact(payload ?? args[0]))).slice(0, 4000),
+              };
+              try { fs.appendFile(LOG_FILE, `[peer-probe] ${safeStringify(entry)}\n`, () => {}); } catch (_) {}
+            }
+            if (found && found.peer) {
+              // 必须使用 origSend 避免死循环
+              origSend('localEmote:updatePeer', found.peer);
+            }
+          }
+        } catch (_) {}
+
         return origSend(channel, ...args);
       };
     }
@@ -434,6 +552,47 @@ ipcMain.handle("localEmote:selectRootDir", async () => {
 // IPC: 发送表情（从文件写入剪贴板并尝试在当前窗口执行粘贴）
 ipcMain.handle("localEmote:send", async (e, filePath) => {
   try {
+    // 尝试写入文件到剪贴板 (Windows CF_HDROP)，以支持 GIF 动图
+    if (process.platform === 'win32') {
+      try {
+        // DROPFILES structure: pFiles (DWORD), pt (POINT), fNC (BOOL), fWide (BOOL)
+        // pFiles = 20 (offset), fWide = 1 (Unicode)
+        const paths = filePath + '\0\0';
+        const pathsBuf = Buffer.from(paths, 'ucs2');
+        const dropFiles = Buffer.alloc(20 + pathsBuf.length);
+        dropFiles.writeUInt32LE(20, 0); // pFiles
+        dropFiles.writeUInt32LE(0, 4);  // pt.x
+        dropFiles.writeUInt32LE(0, 8);  // pt.y
+        dropFiles.writeUInt32LE(0, 12); // fNC
+        dropFiles.writeUInt32LE(1, 16); // fWide
+        pathsBuf.copy(dropFiles, 20);
+        clipboard.writeBuffer('CF_HDROP', dropFiles);
+        
+        // 同时写入图片数据，作为兼容兜底（某些应用可能只读图片）
+        // 但 QQNT 优先读取文件列表，这样能正确发送 GIF
+        const img = nativeImage.createFromPath(String(filePath || ""));
+        if (img && !img.isEmpty()) {
+           clipboard.write({ image: img, buffer: dropFiles, format: 'CF_HDROP' });
+        } else {
+           clipboard.writeBuffer('CF_HDROP', dropFiles);
+        }
+        
+        const wc = e && e.sender;
+        if (wc && !wc.isDestroyed()) {
+          try { wc.paste(); } catch (_) {}
+          return { ok: true, path: filePath, method: "clipboard-file" };
+        }
+        const win = BrowserWindow.getFocusedWindow();
+        if (win && win.webContents && !win.webContents.isDestroyed()) {
+          try { win.webContents.paste(); } catch (_) {}
+          return { ok: true, path: filePath, method: "clipboard-file" };
+        }
+        return { ok: false, path: filePath, reason: "no_target" };
+      } catch (err) {
+        log("send via CF_HDROP failed, fallback to image", err?.message || err);
+      }
+    }
+
     const img = nativeImage.createFromPath(String(filePath || ""));
     if (!img || img.isEmpty()) return { ok: false, path: filePath, reason: "bad_image" };
     clipboard.writeImage(img);

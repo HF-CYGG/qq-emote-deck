@@ -1,5 +1,693 @@
 // 设置页与渲染进程入口
 
+// --- LE main-world bridge injection (works under contextIsolation) ---
+try {
+  (function installLEMainWorldBridge() {
+    if (window.__LE_BRIDGE_ATTEMPTED) return; // avoid duplicate
+    window.__LE_BRIDGE_ATTEMPTED = true;
+    // 1) Inject a script into MAIN WORLD to expose proxy functions
+    try {
+      const s = document.createElement('script');
+      s.id = 'le-main-bridge';
+      s.textContent = `(() => {\n  try {\n    if (window.__LE_BRIDGE_INSTALLED) return;\n    window.__LE_BRIDGE_INSTALLED = true;\n    try {\n      if (!window.__le_sel_patch) {\n        window.__le_sel_patch = true;\n        const __le_findEd = () => {\n          try {\n            const sels = ['[contenteditable=\"true\"]','div[role=\"textbox\"]','div[contenteditable=\"plaintext-only\"]','[contenteditable]','textarea','input[type=\"text\"]'];\n            for (const s of sels) {\n              const list = document.querySelectorAll(s);\n              for (const el of list) {\n                if (!el || el.offsetParent === null) continue;\n                if (el.closest('.two-col-layout__aside, .contact-top-bar, .main-search, .recent-contact, .lite-tools-vue-component .search')) continue;\n                return el;\n              }\n            }\n          } catch (_) {}\n          return null;\n        };\n        const __le_orig = Selection.prototype.getRangeAt;\n        Selection.prototype.getRangeAt = function(i) {\n          try {\n            if (this.rangeCount === 0) {\n              const ed = __le_findEd();\n              const r = document.createRange();\n              if (ed) r.selectNodeContents(ed); else r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              try { this.addRange(r); } catch (_) {}\n            }\n            return __le_orig.call(this, i || 0);\n          } catch (e) {\n            try {\n              const r = document.createRange();\n              r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              return r;\n            } catch (_) {}\n            throw e;\n          }\n        };\n      }\n    } catch (e) {}\n    const pending = new Map();\n    window.addEventListener('message', (e) => {\n      const d = e.data;\n      if (!d || d.__from !== 'le-isolated' || !d.id) return;\n      const p = pending.get(d.id);\n      if (!p) return;\n      pending.delete(d.id);\n      if (d.error) {\n        const err = new Error(d.error.message || 'LE bridge error');\n        err.name = d.error.name || err.name;\n        err.stack = d.error.stack || err.stack;\n        p.reject(err);\n      } else {\n        p.resolve(d.result);\n      }\n    }, false);\n    function send(type, payload) {\n      const id = Math.random().toString(36).slice(2);\n      return new Promise((resolve, reject) => {\n        pending.set(id, { resolve, reject });\n        window.postMessage({ __to: 'le-isolated', id, type, payload }, '*');\n      });\n    }\n    // Expose proxies in MAIN WORLD\n    window.le_sendMessage = function(peer, messages, opts) {\n      return send('sendMessage', { peer, messages, opts });\n    };\n    window.le_convertMessage = function(messages) {\n      return send('convertMessage', { messages });\n    };\n    window.derivePeer = function() {\n      return send('derivePeer', {});\n    };\n  } catch (e) {\n    console.error('[local_emotes] main-world bridge install failed', e);\n  }\n})();`;
+      document.documentElement.appendChild(s);
+      s.remove();
+    } catch (e) {
+      console.error('[local_emotes] bridge script inject failed', e);
+    }
+
+    // 2) Install ISOLATED WORLD message handler to serve MAIN WORLD requests
+    if (!window.__LE_ISOLATED_BRIDGE_INSTALLED) {
+      window.__LE_ISOLATED_BRIDGE_INSTALLED = true;
+      window.addEventListener('message', (e) => {
+        const d = e.data;
+        if (!d || d.__to !== 'le-isolated' || !d.id) return;
+        (async () => {
+          try {
+            let result;
+            if (d.type === 'sendMessage') {
+              const { peer, messages, opts } = d.payload || {};
+              result = await le_sendMessage(peer, messages, opts);
+            } else if (d.type === 'convertMessage') {
+              const { messages } = d.payload || {};
+              result = await le_convertMessage(messages);
+            } else if (d.type === 'derivePeer') {
+              result = await derivePeerAsync();
+            } else {
+              throw new Error('Unknown bridge type: ' + d.type);
+            }
+            window.postMessage({ __from: 'le-isolated', id: d.id, result }, '*');
+          } catch (err) {
+            window.postMessage({ __from: 'le-isolated', id: d.id, error: { message: String((err && err.message) || err), name: err && err.name, stack: err && err.stack } }, '*');
+          }
+        })();
+      }, false);
+    }
+  })();
+} catch (e) {
+  console.error('[local_emotes] installLEMainWorldBridge error', e);
+}
+// --- end LE main-world bridge injection ---
+// --- LE main-world service injection (isolated -> main) ---
+try {
+  (function installLEMainWorldService() {
+    try {
+      const s2 = document.createElement('script');
+      s2.id = 'le-main-service';
+      s2.textContent = `(() => {
+        try {
+          if (window.__LE_MAIN_SERVICE_INSTALLED) return;
+          window.__LE_MAIN_SERVICE_INSTALLED = true;
+          const __le_peerFrom = (c) => {
+            try {
+              if (!c || typeof c !== 'object') return null;
+              if (c.peer && c.peer.chatType && c.peer.peerUid) {
+                let ct = Number(c.peer.chatType);
+                let groupCode = c.peer.groupCode || c.groupCode || (c.header && c.header.groupCode) || '';
+                let peerUid = String(c.peer.peerUid);
+                if (groupCode && ct === 1) ct = 2;
+                if (ct === 2) {
+                  if (!groupCode && peerUid) groupCode = peerUid;
+                  if (groupCode) peerUid = String(groupCode);
+                }
+                const peer = {
+                  chatType: ct,
+                  peerUid,
+                  guildId: c.peer.guildId || c.peer.channelId || c.guildId || ''
+                };
+                if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+                return peer;
+              }
+              const chatType = c.chatType || (c.peer && c.peer.chatType) || c.type || c.scene || c.category;
+              let groupCode = c.groupCode || (c.header && c.header.groupCode) || (c.peer && c.peer.groupCode);
+              let peerUid =
+                (c.peer && c.peer.peerUid) ||
+                c.peerUid ||
+                c.groupCode ||
+                c.groupId ||
+                c.groupUin ||
+                c.groupUid ||
+                c.tinyId ||
+                c.uin ||
+                c.uinStr ||
+                (c.header && (c.header.peerUid || c.header.groupCode || c.header.uid));
+              let ct = Number(chatType);
+              if (groupCode && ct === 1) ct = 2;
+              if (ct === 2) {
+                if (!groupCode && peerUid) groupCode = peerUid;
+                if (groupCode) peerUid = groupCode;
+              }
+              if (Number.isFinite(ct) && peerUid) {
+                const peer = { chatType: ct, peerUid: String(peerUid), guildId: c.guildId || c.channelId || (c.peer && (c.peer.guildId || c.peer.channelId)) || '' };
+                if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+                return peer;
+              }
+            } catch (_) {}
+            return null;
+          };
+          const __le_ignoreProps = new Set([
+            'dep',
+            '__v_raw',
+            '__v_skip',
+            '_value',
+            '__ob__',
+            'prevDep',
+            'nextDep',
+            'prevSub',
+            'nextSub',
+            'deps',
+            'subs',
+            '__vueParentComponent',
+            'parent',
+            'provides'
+          ]);
+          const __le_ignorePropsLocal = new Set([
+            'dep',
+            '__v_raw',
+            '__v_skip',
+            '_value',
+            '__ob__',
+            'prevDep',
+            'nextDep',
+            'prevSub',
+            'nextSub',
+            'deps',
+            'subs',
+            '__vueParentComponent',
+            'parent',
+            'provides',
+            'appContext',
+            'config',
+            'globalProperties'
+          ]);
+          const __le_findCurAioData = (root) => {
+            try {
+              if (!root || typeof root !== 'object') return null;
+              const q = [root];
+              const visited = new WeakSet();
+              let head = 0;
+              while (head < q.length && head < 6000) {
+                const obj = q[head++];
+                if (!obj || typeof obj !== 'object') continue;
+                if (visited.has(obj)) continue;
+                visited.add(obj);
+                try {
+                  if (Object.prototype.hasOwnProperty.call(obj, 'curAioData')) {
+                    return { parent: obj, value: obj.curAioData };
+                  }
+                } catch (_) {}
+                try {
+                  for (const k of Object.keys(obj)) {
+                    if (__le_ignoreProps.has(k)) continue;
+                    const v = obj[k];
+                    if (!v || typeof v !== 'object') continue;
+                    if (v.nodeType && v.nodeName) continue;
+                    q.push(v);
+                  }
+                } catch (_) {}
+              }
+            } catch (_) {}
+            return null;
+          };
+          const __le_findCurAioDataLocal = (root) => {
+            try {
+              if (!root || typeof root !== 'object') return null;
+              const q = [root];
+              const visited = new WeakSet();
+              let head = 0;
+              while (head < q.length && head < 3000) {
+                const obj = q[head++];
+                if (!obj || typeof obj !== 'object') continue;
+                if (visited.has(obj)) continue;
+                visited.add(obj);
+                try {
+                  if (Object.prototype.hasOwnProperty.call(obj, 'curAioData')) {
+                    return { parent: obj, value: obj.curAioData };
+                  }
+                } catch (_) {}
+                try {
+                  for (const k of Object.keys(obj)) {
+                    if (__le_ignorePropsLocal.has(k)) continue;
+                    const v = obj[k];
+                    if (!v || typeof v !== 'object') continue;
+                    if (v.nodeType && v.nodeName) continue;
+                    q.push(v);
+                  }
+                } catch (_) {}
+              }
+            } catch (_) {}
+            return null;
+          };
+          const __le_initCurAioWatch = () => {
+            try {
+              if (window.__le_curAioWatched) return;
+              const app = (globalThis && globalThis.app) || window.app;
+              const found = __le_findCurAioData(app);
+              if (!found || !found.value || !found.value.chatType) return;
+              window.__le_curAioWatched = true;
+              let curAioData = found.value;
+              const updatePeer = () => {
+                try {
+                  let ct = Number(curAioData.chatType);
+                  let groupCode = (curAioData && (curAioData.groupCode || (curAioData.header && curAioData.header.groupCode))) || '';
+                  let peerUid = curAioData && curAioData.header && curAioData.header.uid;
+                  if (groupCode && ct === 1) ct = 2;
+                  if (ct === 2) {
+                    if (!groupCode && peerUid) groupCode = peerUid;
+                    if (groupCode) peerUid = String(groupCode);
+                  }
+                  const peer = { chatType: ct, peerUid: peerUid ? String(peerUid) : '', guildId: '' };
+                  if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+                  window.__le_curPeer = peer;
+                } catch (_) {}
+              };
+              try {
+                Object.defineProperty(found.parent, 'curAioData', {
+                  enumerable: true,
+                  configurable: true,
+                  get() { return curAioData; },
+                  set(v) { curAioData = v; updatePeer(); }
+                });
+              } catch (_) {}
+              updatePeer();
+            } catch (_) {}
+          };
+          try {
+            if (!window.__le_curAioWatchTimer) {
+              __le_initCurAioWatch();
+              window.__le_curAioWatchTimer = setInterval(__le_initCurAioWatch, 500);
+            }
+          } catch (_) {}
+          const __le_bfsFindPeer = (root) => {
+            try {
+              const q = [];
+              const visited = new WeakSet();
+              if (root && typeof root === 'object') q.push(root);
+              let head = 0;
+              while (head < q.length && head < 4000) {
+                const obj = q[head++];
+                if (!obj || typeof obj !== 'object') continue;
+                if (visited.has(obj)) continue;
+                visited.add(obj);
+                try {
+                  if (obj.curAioData) {
+                    const p = __le_peerFrom(obj.curAioData);
+                    if (p) return p;
+                  }
+                  if (obj.peer && obj.peer.chatType && obj.peer.peerUid) {
+                    return { chatType: Number(obj.peer.chatType), peerUid: String(obj.peer.peerUid), guildId: obj.peer.guildId || obj.peer.channelId || '' };
+                  }
+                } catch (_) {}
+                try {
+                  for (const k of Object.keys(obj)) {
+                    const v = obj[k];
+                    if (!v || typeof v !== 'object') continue;
+                    if (v.nodeType && v.nodeName) continue;
+                    q.push(v);
+                  }
+                } catch (_) {}
+              }
+            } catch (_) {}
+            return null;
+          };
+          const __le_bfsFindPeerLocal = (root) => {
+            try {
+              const q = [];
+              const visited = new WeakSet();
+              if (root && typeof root === 'object') q.push(root);
+              let head = 0;
+              while (head < q.length && head < 2500) {
+                const obj = q[head++];
+                if (!obj || typeof obj !== 'object') continue;
+                if (visited.has(obj)) continue;
+                visited.add(obj);
+                try {
+                  if (obj.curAioData) {
+                    const p = __le_peerFrom(obj.curAioData);
+                    if (p) return p;
+                  }
+                  if (obj.peer && obj.peer.chatType && obj.peer.peerUid) {
+                    return { chatType: Number(obj.peer.chatType), peerUid: String(obj.peer.peerUid), guildId: obj.peer.guildId || obj.peer.channelId || '' };
+                  }
+                } catch (_) {}
+                try {
+                  for (const k of Object.keys(obj)) {
+                    if (__le_ignorePropsLocal.has(k)) continue;
+                    const v = obj[k];
+                    if (!v || typeof v !== 'object') continue;
+                    if (v.nodeType && v.nodeName) continue;
+                    q.push(v);
+                  }
+                } catch (_) {}
+              }
+            } catch (_) {}
+            return null;
+          };
+          try { if (!window.__le_findCurAioDataLocal) window.__le_findCurAioDataLocal = __le_findCurAioDataLocal; } catch (_) {}
+          try { if (!window.__le_bfsFindPeerLocal) window.__le_bfsFindPeerLocal = __le_bfsFindPeerLocal; } catch (_) {}
+          const __le_collectRoots = () => {
+            const roots = [];
+            try {
+              const app = (globalThis && globalThis.app) || window.app;
+              if (app) roots.push(app);
+              if (app && app.__vue_app__) roots.push(app.__vue_app__);
+            } catch (_) {}
+            try {
+              const el = document.getElementById('app') || document.querySelector('[data-v-app]');
+              const va = el && el.__vue_app__;
+              if (va) roots.push(va);
+            } catch (_) {}
+            // 新增：尝试从 #main-layout 或其他容器获取
+            try {
+              const els = document.querySelectorAll('.two-col-layout__main, .three-col-layout__main, .aio, .chat-input-area');
+              for (const el of els) {
+                if (el && el.__vue_app__) roots.push(el.__vue_app__);
+              }
+            } catch (_) {}
+            try {
+              const hook = (globalThis && globalThis.__VUE_DEVTOOLS_GLOBAL_HOOK__) || window.__VUE_DEVTOOLS_GLOBAL_HOOK__;
+              const apps = hook && hook.apps;
+              if (Array.isArray(apps)) {
+                for (const a of apps) if (a) roots.push(a);
+              }
+            } catch (_) {}
+            return roots;
+          };
+          const __le_findEditorEl = () => {
+            try {
+              try {
+                const now = Date.now();
+                const cache = window.__le_editor_el_cache;
+                if (cache && cache.el && now - cache.ts < 160) {
+                  const el = cache.el;
+                  if (el.isConnected && el.offsetParent !== null) return el;
+                }
+              } catch (_) {}
+              try {
+                const ae = document.activeElement;
+                if (ae && (ae.isContentEditable || ae.getAttribute && (ae.getAttribute('role') === 'textbox' || ae.getAttribute('contenteditable') === 'true'))) {
+                  window.__le_lastEditorEl = ae;
+                  try { window.__le_editor_el_cache = { el: ae, ts: Date.now() }; } catch (_) {}
+                  return ae;
+                }
+              } catch (_) {}
+              const sels = ['[contenteditable="true"]','div[role="textbox"]','div[contenteditable="plaintext-only"]','[contenteditable]','textarea','input[type="text"]'];
+              for (const s of sels) {
+                const list = document.querySelectorAll(s);
+                for (const el of list) {
+                  if (!el || el.offsetParent === null) continue;
+                  if (el.closest('.two-col-layout__aside, .contact-top-bar, .main-search, .recent-contact, .lite-tools-vue-component .search')) continue;
+                  try { window.__le_lastEditorEl = el; } catch (_) {}
+                  try { window.__le_editor_el_cache = { el, ts: Date.now() }; } catch (_) {}
+                  return el;
+                }
+              }
+            } catch (_) {}
+            try { if (window.__le_lastEditorEl) return window.__le_lastEditorEl; } catch (_) {}
+            return null;
+          };
+          const __le_getEditorContainer = () => {
+            try {
+              const el = __le_findEditorEl();
+              if (!el) return null;
+              const c = el.closest && el.closest('.chat-input-area, .message-input-area, .aio, .three-col-layout__main, .two-col-layout__main, .q-input-area');
+              return c || el;
+            } catch (_) {}
+            return null;
+          };
+          const __le_componentInContainer = (inst, container) => {
+            try {
+              if (!container) return true;
+              const el = (inst && inst.vnode && inst.vnode.el) || (inst && inst.subTree && inst.subTree.el) || null;
+              if (!el) return true;
+              if (container.contains && container.contains(el)) return true;
+              return false;
+            } catch (_) {}
+            return true;
+          };
+          const __le_collectEditorRoots = () => {
+            const roots = [];
+            try {
+              let el = __le_findEditorEl();
+              let depth = 0;
+              const container = __le_getEditorContainer();
+              const pushInst = (inst) => {
+                if (!inst) return;
+                if (!__le_componentInContainer(inst, container)) return;
+                try { if (inst.proxy) roots.push(inst.proxy); } catch (_) {}
+                try { if (inst.ctx) roots.push(inst.ctx); } catch (_) {}
+                try { roots.push(inst); } catch (_) {}
+                try {
+                  const st = inst.appContext && inst.appContext.config && inst.appContext.config.globalProperties && inst.appContext.config.globalProperties.$store;
+                  if (st && st.state) roots.push(st.state);
+                } catch (_) {}
+                try {
+                  const st2 = inst.appContext && inst.appContext.app && inst.appContext.app.config && inst.appContext.app.config.globalProperties && inst.appContext.app.config.globalProperties.$store;
+                  if (st2 && st2.state) roots.push(st2.state);
+                } catch (_) {}
+              };
+              const addFromEl = (node) => {
+                if (!node) return;
+                if (container && node !== container && container.contains && !container.contains(node)) return;
+                try { pushInst(node.__vueParentComponent || node.__vue__ || node.__vue_app__ || null); } catch (_) {}
+                try {
+                  const arr = node.__VUE__;
+                  if (Array.isArray(arr)) {
+                    for (const inst of arr) pushInst(inst);
+                  }
+                } catch (_) {}
+              };
+              while (el && depth < 20) {
+                addFromEl(el);
+                const wrap = el.closest && el.closest('.chat-input-area, .message-input-area, .aio, .three-col-layout__main, .two-col-layout__main');
+                addFromEl(wrap);
+                el = el.parentElement;
+                depth++;
+              }
+              try {
+                const extras = document.querySelectorAll('.chat-input-area, .message-input-area, .aio, .three-col-layout__main, .two-col-layout__main');
+                for (const ex of extras) addFromEl(ex);
+              } catch (_) {}
+            } catch (_) {}
+            return roots;
+          };
+          const __le_findPeerFromEditor = () => {
+            try {
+              const roots = __le_collectEditorRoots();
+              for (const r of roots) {
+                try {
+                  const found = __le_findCurAioDataLocal(r);
+                  if (found && found.value) {
+                    const p = __le_peerFrom(found.value);
+                    if (p) return p;
+                  }
+                } catch (_) {}
+                try {
+                  const p2 = __le_bfsFindPeerLocal(r);
+                  if (p2) return p2;
+                } catch (_) {}
+              }
+              for (const r of roots) {
+                try {
+                  const found = __le_findCurAioData(r);
+                  if (found && found.value) {
+                    const p = __le_peerFrom(found.value);
+                    if (p) return p;
+                  }
+                } catch (_) {}
+                try {
+                  const p2 = __le_bfsFindPeer(r);
+                  if (p2) return p2;
+                } catch (_) {}
+              }
+            } catch (_) {}
+            return null;
+          };
+          const __le_refreshPeerCache = () => {
+            try {
+              let peer = null;
+              try {
+                const curPeer = window.__le_curPeer;
+                if (curPeer && curPeer.chatType && curPeer.peerUid) peer = curPeer;
+              } catch (_) {}
+              const roots = __le_collectRoots();
+              for (const root of roots) {
+                try {
+                  const store = root && root.config && root.config.globalProperties && root.config.globalProperties.$store;
+                  const st = store && store.state;
+                  // 扩充 Store 路径探测
+                  const candidates = [
+                    st && st.common_Aio && st.common_Aio.curAioData,
+                    st && st.aio_chatMsgArea && st.aio_chatMsgArea.curAioData,
+                    st && st.chat && st.chat.chatInfo,
+                    st && st.aio && st.aio.curAioData,
+                    st && st.common && st.common.curPeer, // 新增
+                    st && st.msg && st.msg.currentPeer,   // 新增
+                  ];
+                  for (const it of candidates) { if (it) { peer = __le_peerFrom(it); if (peer) break; } }
+                } catch (_) {}
+                if (peer) break;
+                peer = __le_bfsFindPeer(root);
+                if (peer) break;
+              }
+              if (!peer) {
+                try {
+                  peer = __le_bfsFindPeer(globalThis);
+                } catch (_) {}
+              }
+              if (peer && peer.chatType && peer.peerUid) {
+                window.__le_peer_cache = peer;
+              }
+            } catch (_) {}
+          };
+          try {
+            if (!window.__le_peer_cache_timer) {
+              __le_refreshPeerCache();
+              window.__le_peer_cache_timer = setInterval(__le_refreshPeerCache, 1200);
+            }
+          } catch (_) {}
+          window.addEventListener('message', (e) => {
+            const d = e.data;
+            if (!d || d.__to !== 'le-main' || !d.id) return;
+            (async () => {
+              try {
+                let result;
+                if (d.type === 'sendMessage') {
+                  const { peer, messages } = d.payload || {};
+                  const lt = (globalThis && globalThis.lite_tools) || window.lite_tools;
+                  if (!lt || typeof lt.nativeCall !== 'function') throw new Error('lite_tools.nativeCall missing');
+                  const arr = Array.isArray(messages) ? messages : (messages ? [messages] : []);
+                  const elems = (typeof window.le_convertMessage === 'function') ? (await window.le_convertMessage(arr)) : arr;
+                  const converted = (Array.isArray(elems) ? elems : [elems]).filter(Boolean);
+                  if (!peer || !converted.length) throw new Error('sendMessage: peer/elements missing');
+                  result = await lt.nativeCall(
+                    { eventName: 'ntApi', type: 'request' },
+                    {
+                      cmdName: 'nodeIKernelMsgService/sendMsg',
+                      cmdType: 'invoke',
+                      payload: [
+                        {
+                          msgId: '0',
+                          peer,
+                          msgElements: converted,
+                          msgAttributeInfos: new Map(),
+                        },
+                        null,
+                      ],
+                    }
+                  );
+                } else if (d.type === 'nativeCall') {
+                  const { header, detail, wantRet } = d.payload || {};
+                  const lt = (globalThis && globalThis.lite_tools) || window.lite_tools;
+                  if (!lt || typeof lt.nativeCall !== 'function') throw new Error('lite_tools.nativeCall missing');
+                  result = await lt.nativeCall(header, detail, wantRet);
+                } else if (d.type === 'getPeer') {
+                  let peer = null;
+                  const getHint = () => {
+                    try {
+                  const app = (globalThis && globalThis.app) || window.app;
+                  const c = app && (app.curAioData || app.mainAio);
+                  if (c && c.chatType) {
+                        const groupCode = c.groupCode || (c.header && c.header.groupCode) || '';
+                        let chatType = Number(c.chatType);
+                        if (groupCode && chatType === 1) chatType = 2;
+                        return { chatType, groupCode };
+                      }
+                    } catch (_) {}
+                    return null;
+                  };
+                  const matchHint = (p, h) => {
+                    if (!p || !p.chatType || !p.peerUid) return false;
+                    if (!h || !h.chatType) return true;
+                    const ct = Number(p.chatType);
+                    const ht = Number(h.chatType);
+                    if (ct !== ht) {
+                      if (!h.groupCode) return true;
+                      return false;
+                    }
+                    if (ct === 2 && h.groupCode) {
+                      return String(p.groupCode || p.peerUid) === String(h.groupCode);
+                    }
+                    return true;
+                  };
+                  const hint = getHint();
+                  if (!peer) {
+                    try {
+                      const ep = __le_findPeerFromEditor();
+                      if (ep && matchHint(ep, hint)) peer = ep;
+                    } catch (_) {}
+                  }
+                  try {
+                    const curPeer = window.__le_curPeer;
+                    if (curPeer && matchHint(curPeer, hint)) peer = curPeer;
+                  } catch (_) {}
+                  if (!peer) {
+                    try {
+                      const lt = (globalThis && globalThis.lite_tools) || window.lite_tools;
+                      const p0 = lt && typeof lt.getPeer === 'function' ? lt.getPeer() : null;
+                      if (p0 && matchHint(p0, hint)) peer = p0;
+                    } catch (_) {}
+                  }
+                  if (!peer) {
+                    try {
+                      const app = (globalThis && globalThis.app) || window.app;
+                      let c = app && (app.curAioData || app.mainAio);
+                      if (!c) {
+                        const found = __le_findCurAioData(app);
+                        if (found && found.value) c = found.value;
+                      }
+                      if (!c) {
+                        const roots = __le_collectRoots();
+                        for (const root of roots) {
+                          try {
+                            const store = root && root.config && root.config.globalProperties && root.config.globalProperties.$store;
+                            const st = store && store.state;
+                            const candidates = [
+                              st && st.common_Aio && st.common_Aio.curAioData,
+                              st && st.aio_chatMsgArea && st.aio_chatMsgArea.curAioData,
+                              st && st.chat && st.chat.chatInfo,
+                              st && st.aio && st.aio.curAioData
+                            ];
+                            for (const it of candidates) { if (it) { c = it; break; } }
+                            if (c) break;
+                          } catch (_) {}
+                        }
+                      }
+                      peer = __le_peerFrom(c);
+                      if (!peer) {
+                        const roots = __le_collectRoots();
+                        for (const r of roots) {
+                          peer = __le_bfsFindPeer(r);
+                          if (peer) break;
+                        }
+                      }
+                    } catch (_) {}
+                  }
+                  if (!peer) {
+                    try {
+                      const pc = window.__le_peer_cache || null;
+                      if (pc && matchHint(pc, hint)) peer = pc;
+                    } catch (_) {}
+                  }
+                  if (!peer && typeof window.derivePeer === 'function') {
+                    try {
+                      const p2 = await window.derivePeer();
+                      if (p2 && matchHint(p2, hint)) peer = p2;
+                    } catch (_) {}
+                  }
+                  if (peer && peer.chatType && peer.peerUid) {
+                    try { window.__le_lastPeer = peer; } catch (_) {}
+                  }
+                  result = peer;
+                } else {
+                  throw new Error('Unknown main request type: ' + d.type);
+                }
+                window.postMessage({ __from: 'le-main', id: d.id, result }, '*');
+              } catch (err) {
+                window.postMessage({ __from: 'le-main', id: d.id, error: { message: String((err && err.message) || err), name: err && err.name, stack: err && err.stack } }, '*');
+              }
+            })();
+          }, false);
+        } catch (e) {
+          console.error('[local_emotes] main-world service install failed', e);
+        }
+      })();`;
+      document.documentElement.appendChild(s2);
+      s2.remove();
+    } catch (e) {
+      console.error('[local_emotes] service script inject failed', e);
+    }
+      // define leMainRequest in ISOLATED world
+      if (!window.leMainRequest) {
+        const pending = new Map();
+        window.addEventListener('message', (e) => {
+          const d = e.data;
+          if (!d || d.__from !== 'le-main' || !d.id) return;
+          const p = pending.get(d.id);
+          if (!p) return;
+          pending.delete(d.id);
+          if (d.error) {
+            const err = new Error(d.error.message || 'leMain error');
+            err.name = d.error.name || err.name;
+            err.stack = d.error.stack || err.stack;
+            p.reject(err);
+          } else {
+            p.resolve(d.result);
+          }
+        }, false);
+        window.leMainRequest = function(type, payload) {
+          const id = Math.random().toString(36).slice(2);
+          return new Promise((resolve, reject) => {
+            pending.set(id, { resolve, reject });
+            window.postMessage({ __to: 'le-main', id, type, payload }, '*');
+          });
+        };
+        console.log('[local_emotes] Service Injection Ready: window.leMainRequest is available.');
+      }
+    })();
+  } catch (e) { console.error('[local_emotes] installLEMainWorldService error', e); }
+  // --- end LE main-world service injection ---
+
 // —— 样式注入（一次） ——
 function injectLEStylesOnce() {
   if (document.getElementById("le-styles")) return;
@@ -223,6 +911,21 @@ function onGlobalKeydown(e) {
         } else {
           dbg('debug hotkey: scanStore function missing');
         }
+        // 新增：桥接与主世界服务自检
+        try {
+          const hasLeMainRequest = (typeof window.leMainRequest === 'function');
+          const hasIsolatedLeSend = (typeof window.le_sendMessage === 'function');
+          const hasLt = !!((globalThis && globalThis.lite_tools) || window.lite_tools);
+          dbg('debug hotkey: hasLeMainRequest=', hasLeMainRequest, 'hasIsolatedLeSend=', hasIsolatedLeSend, 'hasLt=', hasLt);
+          if (hasLeMainRequest) {
+            const timer = setTimeout(() => dbg('debug hotkey: leMainRequest(getPeer) timeout (no main service?)'), 2000);
+            window.leMainRequest('getPeer').then((peer) => {
+              try { dbg('debug hotkey: leMainRequest(getPeer) ->', peer); } catch (_) {}
+            }).catch((err) => {
+              try { dbg('debug hotkey: leMainRequest(getPeer) error', err && err.message); } catch (_) {}
+            }).finally(() => clearTimeout(timer));
+          }
+        } catch (_) {}
         return;
       }
     } catch (_) {}
@@ -324,6 +1027,14 @@ function isVisible(el) {
 }
 function getEditorEl() {
   dbg('getEditorEl: start');
+  try {
+    const now = Date.now();
+    const cache = window.__le_editor_cache;
+    if (cache && cache.el && now - cache.ts < 160) {
+      const el = cache.el;
+      if (el.isConnected && isVisible(el)) return el;
+    }
+  } catch (_) {}
   const selectors = [
     '[contenteditable="true"]',
     'div[role="textbox"]',
@@ -364,6 +1075,7 @@ function getEditorEl() {
     const picked = candidates[0];
     const cls = (picked.el.className && typeof picked.el.className === 'string') ? picked.el.className : '';
     dbg('getEditorEl: picked', (picked.el.tagName || '').toLowerCase(), cls, 'score=', picked.score);
+    try { window.__le_editor_cache = { el: picked.el, ts: Date.now() }; } catch (_) {}
     return picked.el;
   }
   // 兜底：旧逻辑
@@ -400,14 +1112,21 @@ function insertImageAtCursor(editable, url) {
     try {
       sel = window.getSelection();
       if (sel) {
-        if (sel.rangeCount === 0) {
+        let needNewRange = sel.rangeCount === 0;
+        if (!needNewRange) {
+          try {
+            range = sel.getRangeAt(0);
+            if (range && !editable.contains(range.startContainer)) needNewRange = true;
+          } catch (_) {
+            needNewRange = true;
+          }
+        }
+        if (needNewRange) {
           range = document.createRange();
           range.selectNodeContents(editable);
           range.collapse(false);
-          sel.removeAllRanges();
-          sel.addRange(range);
-        } else {
-          range = sel.getRangeAt(0);
+          try { sel.removeAllRanges(); sel.addRange(range); } catch (_) {}
+        } else if (range) {
           range.collapse(false);
         }
       }
@@ -442,6 +1161,55 @@ function insertImageAtCursor(editable, url) {
     } catch (_) {}
     return false;
   } catch (e) { dbg('insertImageAtCursor: error', e && e.message); return false; }
+}
+function ensureSelectionAtEditorEnd(editable) {
+  try {
+    if (!editable) return false;
+    const tag = (editable.tagName || '').toLowerCase();
+    try { editable.focus(); } catch (_) {}
+    if (tag === 'textarea' || tag === 'input') return true;
+    if (!editable.isContentEditable) return false;
+    let sel = null; let range = null;
+    try {
+      sel = window.getSelection();
+      if (sel) {
+        let needNewRange = sel.rangeCount === 0;
+        if (!needNewRange) {
+          try {
+            range = sel.getRangeAt(0);
+            if (range && !editable.contains(range.startContainer)) needNewRange = true;
+          } catch (_) {
+            needNewRange = true;
+          }
+        }
+        if (needNewRange) {
+          range = document.createRange();
+          range.selectNodeContents(editable);
+          range.collapse(false);
+          try { sel.removeAllRanges(); sel.addRange(range); } catch (_) {}
+        } else if (range) {
+          range.collapse(false);
+        }
+      }
+    } catch (_) {}
+    return true;
+  } catch (_) { return false; }
+}
+function installGlobalSelectionGuard() {
+  try {
+    if (window.__le_global_selection_guard_installed) return;
+    window.__le_global_selection_guard_installed = true;
+    const guard = (e) => {
+      try {
+        const t = e && e.target;
+        if (!t || !t.closest) return;
+        if (!t.closest('#local-emote-overlay') && !t.closest('#local-emote-toolbar-btn')) return;
+        ensureSelectionAtEditorEnd(getEditorEl());
+      } catch (_) {}
+    };
+    document.addEventListener('pointerdown', guard, true);
+    document.addEventListener('mousedown', guard, true);
+  } catch (_) {}
 }
 function getRect(target) {
   if (!target) return null;
@@ -512,6 +1280,301 @@ function pressEnterToSend(editable) {
     return any;
   } catch (_) { return false; }
 }
+function initCurAioWatchIsolated() {
+  try {
+    if (window.__le_curAioWatchInstalled) return;
+    window.__le_curAioWatchInstalled = true;
+    const ignoreProps = new Set([
+      'dep',
+      '__v_raw',
+      '__v_skip',
+      '_value',
+      '__ob__',
+      'prevDep',
+      'nextDep',
+      'prevSub',
+      'nextSub',
+      'deps',
+      'subs',
+      '__vueParentComponent',
+      'parent',
+      'provides'
+    ]);
+    const findCurAio = (root) => {
+      try {
+        if (!root || typeof root !== 'object') return null;
+        const q = [root];
+        const visited = new WeakSet();
+        let head = 0;
+        while (head < q.length && head < 6000) {
+          const obj = q[head++];
+          if (!obj || typeof obj !== 'object') continue;
+          if (visited.has(obj)) continue;
+          visited.add(obj);
+          try {
+            if (Object.prototype.hasOwnProperty.call(obj, 'curAioData')) return { parent: obj, value: obj.curAioData };
+          } catch (_) {}
+          try {
+            for (const k of Object.keys(obj)) {
+              if (ignoreProps.has(k)) continue;
+              const v = obj[k];
+              if (!v || typeof v !== 'object') continue;
+              if (v.nodeType && v.nodeName) continue;
+              q.push(v);
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+      return null;
+    };
+    const tryInit = () => {
+      try {
+        const app = window.app;
+        const found = findCurAio(app);
+        if (!found || !found.value || !found.value.chatType) return;
+        let curAioData = found.value;
+        const updatePeer = () => {
+          try {
+            let ct = Number(curAioData.chatType);
+            let groupCode = (curAioData && (curAioData.groupCode || (curAioData.header && curAioData.header.groupCode))) || '';
+            let peerUid = curAioData && curAioData.header && curAioData.header.uid;
+            if (groupCode && ct === 1) ct = 2;
+            if (ct === 2) {
+              if (!groupCode && peerUid) groupCode = peerUid;
+              if (groupCode) peerUid = String(groupCode);
+            }
+            const peer = { chatType: ct, peerUid: peerUid ? String(peerUid) : '', guildId: '' };
+            if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+            window.__le_curPeer = peer;
+          } catch (_) {}
+        };
+        try {
+          Object.defineProperty(found.parent, 'curAioData', {
+            enumerable: true,
+            configurable: true,
+            get() { return curAioData; },
+            set(v) { curAioData = v; updatePeer(); }
+          });
+        } catch (_) {}
+        updatePeer();
+        if (window.__le_curAioWatchTimer) { clearInterval(window.__le_curAioWatchTimer); window.__le_curAioWatchTimer = null; }
+      } catch (_) {}
+    };
+    tryInit();
+    if (!window.__le_curAioWatchTimer) window.__le_curAioWatchTimer = setInterval(tryInit, 500);
+  } catch (_) {}
+}
+try { initCurAioWatchIsolated(); } catch (_) {}
+const __le_ignorePropsIso = new Set([
+  'dep',
+  '__v_raw',
+  '__v_skip',
+  '_value',
+  '__ob__',
+  'prevDep',
+  'nextDep',
+  'prevSub',
+  'nextSub',
+  'deps',
+  'subs',
+  '__vueParentComponent',
+  'parent',
+  'provides'
+]);
+const __le_ignorePropsIsoLocal = new Set([
+  'dep',
+  '__v_raw',
+  '__v_skip',
+  '_value',
+  '__ob__',
+  'prevDep',
+  'nextDep',
+  'prevSub',
+  'nextSub',
+  'deps',
+  'subs',
+  '__vueParentComponent',
+  'parent',
+  'provides',
+  'appContext',
+  'config',
+  'globalProperties'
+]);
+function __le_peerFromIso(c) {
+  try {
+    if (!c || typeof c !== 'object') return null;
+    if (c.peer && c.peer.chatType && c.peer.peerUid) {
+      let ct = Number(c.peer.chatType);
+      let groupCode = c.peer.groupCode || c.groupCode || (c.header && c.header.groupCode) || '';
+      let peerUid = String(c.peer.peerUid);
+      if (groupCode && ct === 1) ct = 2;
+      if (ct === 2) {
+        if (!groupCode && peerUid) groupCode = peerUid;
+        if (groupCode) peerUid = String(groupCode);
+      }
+      const peer = {
+        chatType: ct,
+        peerUid,
+        guildId: c.peer.guildId || c.peer.channelId || c.guildId || ''
+      };
+      if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+      return peer;
+    }
+    const chatType = c.chatType || (c.peer && c.peer.chatType) || c.type || c.scene || c.category;
+    let groupCode = c.groupCode || (c.header && c.header.groupCode) || (c.peer && c.peer.groupCode);
+    let peerUid =
+      (c.peer && c.peer.peerUid) ||
+      c.peerUid ||
+      c.groupCode ||
+      c.groupId ||
+      c.groupUin ||
+      c.groupUid ||
+      c.tinyId ||
+      c.uin ||
+      c.uinStr ||
+      (c.header && (c.header.peerUid || c.header.groupCode || c.header.uid));
+    let ct = Number(chatType);
+    if (groupCode && ct === 1) ct = 2;
+    if (ct === 2) {
+      if (!groupCode && peerUid) groupCode = peerUid;
+      if (groupCode) peerUid = groupCode;
+    }
+    if (Number.isFinite(ct) && peerUid) {
+      const peer = { chatType: ct, peerUid: String(peerUid), guildId: c.guildId || c.channelId || (c.peer && (c.peer.guildId || c.peer.channelId)) || '' };
+      if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+      return peer;
+    }
+  } catch (_) {}
+  return null;
+}
+function __le_findCurAioDataIso(root) {
+  try {
+    if (!root || typeof root !== 'object') return null;
+    const q = [root];
+    const visited = new WeakSet();
+    let head = 0;
+    while (head < q.length && head < 6000) {
+      const obj = q[head++];
+      if (!obj || typeof obj !== 'object') continue;
+      if (visited.has(obj)) continue;
+      visited.add(obj);
+      try {
+        if (Object.prototype.hasOwnProperty.call(obj, 'curAioData')) {
+          return { parent: obj, value: obj.curAioData };
+        }
+      } catch (_) {}
+      try {
+        for (const k of Object.keys(obj)) {
+          if (__le_ignorePropsIso.has(k)) continue;
+          const v = obj[k];
+          if (!v || typeof v !== 'object') continue;
+          if (v.nodeType && v.nodeName) continue;
+          q.push(v);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return null;
+}
+function __le_findCurAioDataIsoLocal(root) {
+  try {
+    if (!root || typeof root !== 'object') return null;
+    const q = [root];
+    const visited = new WeakSet();
+    let head = 0;
+    while (head < q.length && head < 3000) {
+      const obj = q[head++];
+      if (!obj || typeof obj !== 'object') continue;
+      if (visited.has(obj)) continue;
+      visited.add(obj);
+      try {
+        if (Object.prototype.hasOwnProperty.call(obj, 'curAioData')) {
+          return { parent: obj, value: obj.curAioData };
+        }
+      } catch (_) {}
+      try {
+        for (const k of Object.keys(obj)) {
+          if (__le_ignorePropsIsoLocal.has(k)) continue;
+          const v = obj[k];
+          if (!v || typeof v !== 'object') continue;
+          if (v.nodeType && v.nodeName) continue;
+          q.push(v);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return null;
+}
+function __le_bfsFindPeerIso(root) {
+  try {
+    const q = [];
+    const visited = new WeakSet();
+    if (root && typeof root === 'object') q.push(root);
+    let head = 0;
+    while (head < q.length && head < 4000) {
+      const obj = q[head++];
+      if (!obj || typeof obj !== 'object') continue;
+      if (visited.has(obj)) continue;
+      visited.add(obj);
+      try {
+        if (obj.curAioData) {
+          const p = __le_peerFromIso(obj.curAioData);
+          if (p) return p;
+        }
+        if (obj.peer && obj.peer.chatType && obj.peer.peerUid) {
+          const p2 = __le_peerFromIso(obj);
+          if (p2) return p2;
+        }
+      } catch (_) {}
+      try {
+        for (const k of Object.keys(obj)) {
+          if (__le_ignorePropsIso.has(k)) continue;
+          const v = obj[k];
+          if (!v || typeof v !== 'object') continue;
+          if (v.nodeType && v.nodeName) continue;
+          q.push(v);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return null;
+}
+function __le_bfsFindPeerIsoLocal(root) {
+  try {
+    const q = [];
+    const visited = new WeakSet();
+    if (root && typeof root === 'object') q.push(root);
+    let head = 0;
+    while (head < q.length && head < 2500) {
+      const obj = q[head++];
+      if (!obj || typeof obj !== 'object') continue;
+      if (visited.has(obj)) continue;
+      visited.add(obj);
+      try {
+        if (obj.curAioData) {
+          const p = __le_peerFromIso(obj.curAioData);
+          if (p) return p;
+        }
+        if (obj.peer && obj.peer.chatType && obj.peer.peerUid) {
+          const p2 = __le_peerFromIso(obj);
+          if (p2) return p2;
+        }
+      } catch (_) {}
+      try {
+        for (const k of Object.keys(obj)) {
+          if (__le_ignorePropsIsoLocal.has(k)) continue;
+          const v = obj[k];
+          if (!v || typeof v !== 'object') continue;
+          if (v.nodeType && v.nodeName) continue;
+          q.push(v);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return null;
+}
+try { if (!window.__le_findCurAioData) window.__le_findCurAioData = __le_findCurAioDataIso; } catch (_) {}
+try { if (!window.__le_bfsFindPeer) window.__le_bfsFindPeer = __le_bfsFindPeerIso; } catch (_) {}
 function findSendButton(container) {
   if (!container) return null;
   dbg('findSendButton: start');
@@ -580,41 +1643,305 @@ function findSendButton(container) {
 }
 // 从 lite_tools 或全局 Vue store 等来源推断当前会话 peer（优先 lite_tools.getPeer）
 function derivePeer() {
+  const buildPeerFromCur = (c) => {
+    try {
+      if (!c) return null;
+      if (c.peer && c.peer.chatType && c.peer.peerUid) {
+        const peer = Object.assign({}, c.peer);
+        if (peer.chatType === 2 || Number(peer.chatType) === 2) {
+          const groupCode = peer.groupCode || c.groupCode || (c.header && c.header.groupCode);
+          if (groupCode) peer.groupCode = groupCode;
+        }
+        return peer;
+      }
+      const chatType = c.chatType || (c.peer && c.peer.chatType);
+      let groupCode = c.groupCode || (c.header && c.header.groupCode) || (c.peer && c.peer.groupCode);
+      let peerUid = (c.header && (c.header.uid || c.header.peerUid)) || (c.peer && c.peer.peerUid) || c.peerUid || c.groupCode;
+      let ct = Number(chatType);
+      if (groupCode && ct === 1) ct = 2;
+      if (ct === 2) {
+        if (!groupCode && peerUid) groupCode = peerUid;
+        if (groupCode) peerUid = groupCode;
+      }
+      if (Number.isFinite(ct) && peerUid) {
+        const peer = { chatType: ct, peerUid: String(peerUid), guildId: c.guildId || '' };
+        if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+        return peer;
+      }
+    } catch (_) {}
+    return null;
+  };
+  const findCurAio = (root) => {
+    try {
+      if (typeof window.__le_findCurAioData === 'function') return window.__le_findCurAioData(root);
+    } catch (_) {}
+    return __le_findCurAioDataIso(root);
+  };
+  const findCurAioLocal = (root) => {
+    try {
+      if (typeof window.__le_findCurAioDataLocal === 'function') return window.__le_findCurAioDataLocal(root);
+    } catch (_) {}
+    return __le_findCurAioDataIsoLocal(root);
+  };
+  const bfsFindPeer = (root) => {
+    try {
+      if (typeof window.__le_bfsFindPeer === 'function') return window.__le_bfsFindPeer(root);
+    } catch (_) {}
+    return __le_bfsFindPeerIso(root);
+  };
+  const bfsFindPeerLocal = (root) => {
+    try {
+      if (typeof window.__le_bfsFindPeerLocal === 'function') return window.__le_bfsFindPeerLocal(root);
+    } catch (_) {}
+    return __le_bfsFindPeerIsoLocal(root);
+  };
+  const findPeerFromEditor = () => {
+    try {
+      let el = (getEditorEl && getEditorEl()) || document.activeElement || null;
+      let depth = 0;
+      const getEditorContainer = () => {
+        try {
+          const ed = (getEditorEl && getEditorEl()) || el || null;
+          if (!ed) return null;
+          const c = ed.closest && ed.closest('.chat-input-area, .message-input-area, .aio, .three-col-layout__main, .two-col-layout__main, .q-input-area');
+          return c || ed;
+        } catch (_) {}
+        return null;
+      };
+      const container = getEditorContainer();
+      const componentInContainer = (inst) => {
+        try {
+          if (!container) return true;
+          const eln = (inst && inst.vnode && inst.vnode.el) || (inst && inst.subTree && inst.subTree.el) || null;
+          if (!eln) return true;
+          if (container.contains && container.contains(eln)) return true;
+          return false;
+        } catch (_) {}
+        return true;
+      };
+      const pushInst = (inst, roots) => {
+        if (!inst) return;
+        if (!componentInContainer(inst)) return;
+        try { if (inst.proxy) roots.push(inst.proxy); } catch (_) {}
+        try { if (inst.ctx) roots.push(inst.ctx); } catch (_) {}
+        try { roots.push(inst); } catch (_) {}
+        try {
+          const st = inst.appContext && inst.appContext.config && inst.appContext.config.globalProperties && inst.appContext.config.globalProperties.$store;
+          if (st && st.state) roots.push(st.state);
+        } catch (_) {}
+        try {
+          const st2 = inst.appContext && inst.appContext.app && inst.appContext.app.config && inst.appContext.app.config.globalProperties && inst.appContext.app.config.globalProperties.$store;
+          if (st2 && st2.state) roots.push(st2.state);
+        } catch (_) {}
+      };
+      const addFromEl = (node, roots) => {
+        if (!node) return;
+        if (container && node !== container && container.contains && !container.contains(node)) return;
+        try { pushInst(node.__vueParentComponent || node.__vue__ || node.__vue_app__ || null, roots); } catch (_) {}
+        try {
+          const arr = node.__VUE__;
+          if (Array.isArray(arr)) {
+            for (const inst of arr) pushInst(inst, roots);
+          }
+        } catch (_) {}
+      };
+      while (el && depth < 20) {
+        const roots = [];
+        addFromEl(el, roots);
+        try {
+          const wrap = el.closest && el.closest('.chat-input-area, .message-input-area, .aio, .three-col-layout__main, .two-col-layout__main');
+          addFromEl(wrap, roots);
+        } catch (_) {}
+        for (const r of roots) {
+          try {
+            const found = findCurAioLocal(r);
+            if (found && found.value) {
+              const p = buildPeerFromCur(found.value);
+              if (p) return p;
+            }
+          } catch (_) {}
+          try {
+            const p2 = bfsFindPeerLocal(r);
+            if (p2) return p2;
+          } catch (_) {}
+        }
+        el = el.parentElement;
+        depth++;
+      }
+      try {
+        const extras = document.querySelectorAll('.chat-input-area, .message-input-area, .aio, .three-col-layout__main, .two-col-layout__main');
+        for (const ex of extras) {
+          const roots = [];
+          addFromEl(ex, roots);
+          for (const r of roots) {
+            try {
+              const found = findCurAioLocal(r);
+              if (found && found.value) {
+                const p = buildPeerFromCur(found.value);
+                if (p) return p;
+              }
+            } catch (_) {}
+            try {
+              const p2 = bfsFindPeerLocal(r);
+              if (p2) return p2;
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      try {
+        const extras = document.querySelectorAll('.chat-input-area, .message-input-area, .aio, .three-col-layout__main, .two-col-layout__main');
+        for (const ex of extras) {
+          const roots = [];
+          addFromEl(ex, roots);
+          for (const r of roots) {
+            try {
+              const found = findCurAio(r);
+              if (found && found.value) {
+                const p = buildPeerFromCur(found.value);
+                if (p) return p;
+              }
+            } catch (_) {}
+            try {
+              const p2 = bfsFindPeer(r);
+              if (p2) return p2;
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    } catch (_) {}
+    return null;
+  };
+  const getHint = () => {
+    try {
+      const app = window.app;
+      const c = app && (app.curAioData || app.mainAio);
+      if (c && c.chatType) return { chatType: Number(c.chatType), groupCode: c.groupCode || (c.header && c.header.groupCode) || '' };
+    } catch (_) {}
+    try {
+      const root = window.app && window.app.__vue_app__;
+      const store = root && root.config && root.config.globalProperties && root.config.globalProperties.$store;
+      const st = store && store.state;
+      const candidates = [
+        st && st.common_Aio && st.common_Aio.curAioData,
+        st && st.aio_chatMsgArea && st.aio_chatMsgArea.curAioData,
+        st && st.chat && st.chat.chatInfo,
+        st && st.aio && st.aio.curAioData,
+        st && st.common && st.common.curPeer,
+        st && st.msg && st.msg.currentPeer,
+      ];
+      for (const c of candidates) {
+        if (c && c.chatType) {
+          const groupCode = c.groupCode || (c.header && c.header.groupCode) || '';
+          let chatType = Number(c.chatType);
+          if (groupCode && chatType === 1) chatType = 2;
+          return { chatType, groupCode };
+        }
+      }
+    } catch (_) {}
+    return null;
+  };
+  const matchHint = (p, h) => {
+    if (!p || !p.chatType || !p.peerUid) return false;
+    if (!h || !h.chatType) return true;
+    const ct = Number(p.chatType);
+    const ht = Number(h.chatType);
+    if (ct !== ht) {
+      if (!h.groupCode) return true;
+      return false;
+    }
+    if (ct === 2 && h.groupCode) return String(p.groupCode || p.peerUid) === String(h.groupCode);
+    return true;
+  };
+  const hint = getHint();
+  try {
+    const ep = findPeerFromEditor();
+    if (ep && matchHint(ep, hint)) return ep;
+  } catch (_) {}
+  try {
+    const cp = window.__le_curPeer;
+    if (cp && matchHint(cp, hint)) return cp;
+  } catch (_) {}
   // 0) 最近缓存
   try {
     const lp = window.__le_lastPeer;
-    if (lp && lp.chatType && lp.peerUid) return lp;
+    if (lp && matchHint(lp, hint)) return lp;
   } catch (_) {}
   // 1) lite_tools.getPeer（若可用）
   try {
     if (window.lite_tools && typeof window.lite_tools.getPeer === 'function') {
       const p = window.lite_tools.getPeer();
-      if (p && p.chatType && p.peerUid) return p;
+      if (p && matchHint(p, hint)) return p;
     }
   } catch (_) {}
-  // 2) window.app.curAioData
+  // 2) window.app.curAioData / mainAio
   try {
-    if (window.app && window.app.curAioData) {
-      const c = window.app.curAioData;
-      if (c.peer && c.peer.chatType && c.peer.peerUid) return c.peer;
-      const chatType = c.chatType || (c.peer && c.peer.chatType);
-      const peerUid = (c.header && c.header.uid) || (c.peer && c.peer.peerUid) || c.peerUid;
-      if (chatType && peerUid) return { chatType, peerUid };
+    if (window.app) {
+      const c = window.app.curAioData || window.app.mainAio;
+      if (c) {
+        if (c.peer && c.peer.chatType && c.peer.peerUid) {
+          const peer = Object.assign({}, c.peer);
+          if (peer.chatType === 2 || Number(peer.chatType) === 2) {
+            const groupCode = peer.groupCode || c.groupCode || (c.header && c.header.groupCode);
+            if (groupCode) peer.groupCode = groupCode;
+          }
+          return peer;
+        }
+        const chatType = c.chatType || (c.peer && c.peer.chatType);
+        let groupCode = c.groupCode || (c.header && c.header.groupCode) || (c.peer && c.peer.groupCode);
+        let peerUid = (c.header && (c.header.uid || c.header.peerUid)) || (c.peer && c.peer.peerUid) || c.peerUid || c.groupCode;
+        let ct = Number(chatType);
+        if (groupCode && ct === 1) ct = 2;
+        if (ct === 2) {
+          if (!groupCode && peerUid) groupCode = peerUid;
+          if (groupCode) peerUid = groupCode;
+        }
+        if (Number.isFinite(ct) && peerUid) {
+          const peer = { chatType: ct, peerUid: String(peerUid), guildId: c.guildId || '' };
+          if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+          return peer;
+        }
+      }
     }
   } catch (_) {}
-  // 3) Vuex store 常见路径
+  // 3) Vuex store 常见路径 (适配更多 store 结构)
   try {
-    const store = window.app && window.app.__vue_app__ && window.app.__vue_app__.config && window.app.__vue_app__.config.globalProperties && window.app.__vue_app__.config.globalProperties.$store;
+    const root = window.app && window.app.__vue_app__;
+    const store = root && root.config && root.config.globalProperties && root.config.globalProperties.$store;
     const st = store && store.state;
-    const candidates = [];
-    if (st && st.common_Aio && st.common_Aio.curAioData) candidates.push(st.common_Aio.curAioData);
-    if (st && st.aio_chatMsgArea && st.aio_chatMsgArea.curAioData) candidates.push(st.aio_chatMsgArea.curAioData);
-    for (const c of candidates) {
-      if (!c) continue;
-      if (c.peer && c.peer.chatType && c.peer.peerUid) return c.peer;
-      const chatType = c.chatType || (c.peer && c.peer.chatType);
-      const peerUid = (c.header && c.header.uid) || (c.peer && c.peer.peerUid) || c.peerUid;
-      if (chatType && peerUid) return { chatType, peerUid };
+    if (st) {
+      const candidates = [
+        st.common_Aio && st.common_Aio.curAioData,
+        st.aio_chatMsgArea && st.aio_chatMsgArea.curAioData,
+        st.chat && st.chat.chatInfo, // 新增：部分版本可能的路径
+        st.aio && st.aio.curAioData, // 新增
+        st.common && st.common.curPeer, // 新增
+        st.msg && st.msg.currentPeer,   // 新增
+      ];
+      for (const c of candidates) {
+        if (!c) continue;
+        if (c.peer && c.peer.chatType && c.peer.peerUid) {
+          const peer = Object.assign({}, c.peer);
+          if (peer.chatType === 2 || Number(peer.chatType) === 2) {
+            const groupCode = peer.groupCode || c.groupCode || (c.header && c.header.groupCode);
+            if (groupCode) peer.groupCode = groupCode;
+          }
+          return peer;
+        }
+        const chatType = c.chatType || (c.peer && c.peer.chatType);
+        let groupCode = c.groupCode || (c.header && c.header.groupCode) || (c.peer && c.peer.groupCode);
+        let peerUid = (c.header && (c.header.uid || c.header.peerUid)) || (c.peer && c.peer.peerUid) || c.peerUid || c.groupCode;
+        let ct = Number(chatType);
+        if (groupCode && ct === 1) ct = 2;
+        if (ct === 2) {
+          if (!groupCode && peerUid) groupCode = peerUid;
+          if (groupCode) peerUid = groupCode;
+        }
+        if (Number.isFinite(ct) && peerUid) {
+          const peer = { chatType: ct, peerUid: String(peerUid), guildId: c.guildId || '' };
+          if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
+          return peer;
+        }
+      }
     }
   } catch (_) {}
   // 4) 最近一次 sendMsg 捕获
@@ -625,7 +1952,7 @@ function derivePeer() {
       return ls;
     }
   } catch (_) {}
-  // 5) 深度扫描 store 中的消息元素，尝试从元素容器/父对象推断 peer
+  // 5) 深度扫描 store 中的消息元素
   try {
     const arr = (typeof scanStoreForMsgElements === 'function') ? scanStoreForMsgElements(5) : [];
     for (const r of arr) {
@@ -638,14 +1965,43 @@ function derivePeer() {
           if (c && c.chatType && c.peerUid) { try { window.__le_lastPeer = c; } catch (_) {} return c; }
         }
         const chatType = parent.chatType || (parent.peer && parent.peer.chatType);
-        const peerUid = (parent.header && parent.header.uid) || (parent.peer && parent.peer.peerUid) || parent.peerUid;
-        if (chatType && peerUid) { const pp = { chatType, peerUid }; try { window.__le_lastPeer = pp; } catch (_) {} return pp; }
+        let groupCode = parent.groupCode || (parent.header && parent.header.groupCode) || (parent.peer && parent.peer.groupCode);
+        let peerUid = (parent.header && (parent.header.uid || parent.header.peerUid)) || (parent.peer && parent.peer.peerUid) || parent.peerUid || parent.groupCode;
+        let ct = Number(chatType);
+        if (groupCode && ct === 1) ct = 2;
+        if (ct === 2) {
+          if (!groupCode && peerUid) groupCode = peerUid;
+          if (groupCode) peerUid = groupCode;
+        }
+        if (Number.isFinite(ct) && peerUid) {
+          const pp = { chatType: ct, peerUid: String(peerUid) };
+          if (ct === 2 && groupCode) pp.groupCode = String(groupCode);
+          try { window.__le_lastPeer = pp; } catch (_) {}
+          return pp;
+        }
       }
     }
   } catch (_) {}
   return null;
 }
 try { window.derivePeer = derivePeer; } catch (_) {}
+async function derivePeerAsync() {
+  try {
+    if (typeof window.leMainRequest === 'function') {
+      const p = await window.leMainRequest('getPeer');
+      if (p && p.chatType && p.peerUid) {
+        try { window.__le_lastPeer = p; } catch (_) {}
+        return p;
+      }
+    }
+  } catch (_) {}
+  try {
+    const p2 = derivePeer();
+    if (p2 && p2.chatType && p2.peerUid) return p2;
+  } catch (_) {}
+  return null;
+}
+try { window.derivePeerAsync = derivePeerAsync; } catch (_) {}
 function tryInsertImageToEditor(absPath) {
   try {
     const editor = getEditorEl();
@@ -776,7 +2132,8 @@ function ensureLESendMsgDebugHookInstalled() {
       try { window.__le_sendmsg_hooked = true; } catch (_) {}
       dbg('sendMsg debug hook installed (lazy/robust)');
     } else {
-      dbg('sendMsg debug hook install failed (lazy): nativeCall is non-writable');
+      // 常见情况：lite_tools 的 nativeCall 被冻结或只读，这不是错误，仅意味着无法注入调试钩子
+      // dbg('sendMsg debug hook install failed (lazy): nativeCall is non-writable');
     }
   } catch (_) {}
 }
@@ -785,55 +2142,6 @@ try { window.__le_installSendMsgHook = ensureLESendMsgDebugHookInstalled; } catc
 // 官方消息元素转换与发送
 async function le_convertMessage(message) {
 try { window.le_convertMessage = le_convertMessage; } catch (_) {}
-
-// --- LE main-world bridge injection (works under contextIsolation) ---
-try {
-  (function installLEMainWorldBridge() {
-    if (window.__LE_BRIDGE_ATTEMPTED) return; // avoid duplicate
-    window.__LE_BRIDGE_ATTEMPTED = true;
-    // 1) Inject a script into MAIN WORLD to expose proxy functions
-    try {
-      const s = document.createElement('script');
-      s.id = 'le-main-bridge';
-      s.textContent = `(() => {\n  try {\n    if (window.__LE_BRIDGE_INSTALLED) return;\n    window.__LE_BRIDGE_INSTALLED = true;\n    const pending = new Map();\n    window.addEventListener('message', (e) => {\n      const d = e.data;\n      if (!d || d.__from !== 'le-isolated' || !d.id) return;\n      const p = pending.get(d.id);\n      if (!p) return;\n      pending.delete(d.id);\n      if (d.error) {\n        const err = new Error(d.error.message || 'LE bridge error');\n        err.name = d.error.name || err.name;\n        err.stack = d.error.stack || err.stack;\n        p.reject(err);\n      } else {\n        p.resolve(d.result);\n      }\n    }, false);\n    function send(type, payload) {\n      const id = Math.random().toString(36).slice(2);\n      return new Promise((resolve, reject) => {\n        pending.set(id, { resolve, reject });\n        window.postMessage({ __to: 'le-isolated', id, type, payload }, '*');\n      });\n    }\n    // Expose proxies in MAIN WORLD\n    window.le_sendMessage = function(peer, messages, opts) {\n      return send('sendMessage', { peer, messages, opts });\n    };\n    window.le_convertMessage = function(messages) {\n      return send('convertMessage', { messages });\n    };\n    window.derivePeer = function() {\n      return send('derivePeer', {});\n    };\n  } catch (e) {\n    console.error('[local_emotes] main-world bridge install failed', e);\n  }\n})();`;
-      document.documentElement.appendChild(s);
-      s.remove();
-    } catch (e) {
-      console.error('[local_emotes] bridge script inject failed', e);
-    }
-
-    // 2) Install ISOLATED WORLD message handler to serve MAIN WORLD requests
-    if (!window.__LE_ISOLATED_BRIDGE_INSTALLED) {
-      window.__LE_ISOLATED_BRIDGE_INSTALLED = true;
-      window.addEventListener('message', (e) => {
-        const d = e.data;
-        if (!d || d.__to !== 'le-isolated' || !d.id) return;
-        (async () => {
-          try {
-            let result;
-            if (d.type === 'sendMessage') {
-              const { peer, messages, opts } = d.payload || {};
-              result = await le_sendMessage(peer, messages, opts);
-            } else if (d.type === 'convertMessage') {
-              const { messages } = d.payload || {};
-              result = await le_convertMessage(messages);
-            } else if (d.type === 'derivePeer') {
-              result = await derivePeer();
-            } else {
-              throw new Error('Unknown bridge type: ' + d.type);
-            }
-            window.postMessage({ __from: 'le-isolated', id: d.id, result }, '*');
-          } catch (err) {
-            window.postMessage({ __from: 'le-isolated', id: d.id, error: { message: String((err && err.message) || err), name: err && err.name, stack: err && err.stack } }, '*');
-          }
-        })();
-      }, false);
-    }
-  })();
-} catch (e) {
-  console.error('[local_emotes] installLEMainWorldBridge error', e);
-}
-// --- end LE main-world bridge injection ---
   const lt = (globalThis && globalThis.lite_tools) || window.lite_tools;
   switch ((message && message.type) || '') {
     case 'text':
@@ -848,21 +2156,41 @@ try {
           atNtUid: '',
         },
       };
+    case 'marketFace': {
+      const { emojiPackageId, emojiId, key, faceName } = message;
+      if (!emojiPackageId || !emojiId) return null;
+      return {
+        elementType: 6,
+        elementId: '',
+        marketFaceElement: {
+          itemType: 6,
+          faceInfo: 1,
+          emojiPackageId: String(emojiPackageId),
+          emojiId: String(emojiId),
+          key: key || '',
+          faceName: faceName || '[表情]'
+        }
+      };
+    }
     case 'image': {
       const path = message.path;
       if (!lt || !path) return null;
       try {
-        await lt.nativeCall(
+        // 预取文件类型用于判断 GIF 特殊分支
+        var primFileType = await lt.nativeCall(
           { type: 'request', eventName: 'FileApi' },
           { cmdName: 'getFileType', cmdType: 'invoke', payload: [path] },
           true
         );
       } catch (_) {}
+      const isGif = !!(primFileType && primFileType.ext === 'gif') || /\.gif$/i.test(String(path || ''));
       let copyFile = null;
       try {
+        // elementSubType: 1 (常规/GIF), 5 (可能已废弃)
+        // 统一使用 1 以确保兼容性，picType=2000 会处理显示逻辑
         copyFile = await lt.nativeCall(
           { type: 'request', eventName: 'ntApi' },
-          { cmdName: 'nodeIKernelMsgService/copyFileWithDelExifInfo', cmdType: 'invoke', payload: [ { sourcePath: path, elementSubType: (Number(message && message.picSubType) === 1 ? 5 : 1) }, null ] },
+          { cmdName: 'nodeIKernelMsgService/copyFileWithDelExifInfo', cmdType: 'invoke', payload: [ { sourcePath: path, elementSubType: 1 }, null ] },
           true
         );
       } catch (e) { dbg('copyFileWithDelExifInfo failed', e && e.message); }
@@ -887,17 +2215,26 @@ try {
       try {
         imageSize = await lt.nativeCall(
           { type: 'request', eventName: 'FileApi' },
-          { cmdName: 'getImageSize', cmdType: 'invoke', payload: [newPath] },
+          { cmdName: 'getImageSizeFromPath', cmdType: 'invoke', payload: [newPath] },
           true
         );
       } catch (_) {
         try {
           imageSize = await lt.nativeCall(
             { type: 'request', eventName: 'FileApi' },
-            { cmdName: 'getImageSizeFromPath', cmdType: 'invoke', payload: [newPath] },
+            { cmdName: 'getImageSize', cmdType: 'invoke', payload: [newPath] },
             true
           );
         } catch (e2) { dbg('imageSize fallback failed', e2 && e2.message); }
+      }
+      if (!imageSize || !Number.isFinite(imageSize.width) || !Number.isFinite(imageSize.height)) {
+        try {
+          imageSize = await lt.nativeCall(
+            { type: 'request', eventName: 'FileApi' },
+            { cmdName: 'getImageSizeFromPath', cmdType: 'invoke', payload: [path] },
+            true
+          );
+        } catch (_) {}
       }
       let md5Hex = '';
       try {
@@ -940,21 +2277,51 @@ try {
         if (/^[A-Za-z]:$/.test(name)) return '';
         return name;
       };
+
+      // Enhanced logging for MD5 debug
+      try {
+        dbg('le_convertMessage: image meta', {
+          copyFileMd5: copyFile && copyFile.md5,
+          fallbackMd5: md5Hex,
+          fileSize,
+          imageSize
+        });
+      } catch (_) {}
+
+      // 反向研究结论：
+      // 要让本地图片显示为无气泡的“原生表情”，需要：
+      // 1. picSubType = 1 (Emoji/Face)
+      // 2. picType = 2000 (伪装成 GIF/动图，强制客户端按表情渲染)
+      // 3. original = false (非原图模式)
+      // 4. copyFile 时 elementSubType = 1 (常规富媒体通道，5 可能已废弃)
+      
+      const isFaceMode = !!(message.asFace); 
+      const rawSubType = (typeof message.picSubType === 'number' ? message.picSubType : (isFaceMode ? 1 : 0));
+      
+      let picWidth = imageSize && imageSize.width;
+      let picHeight = imageSize && imageSize.height;
+      if (isFaceMode && Number.isFinite(picWidth) && Number.isFinite(picHeight)) {
+        const faceMax = 128;
+        const maxDim = Math.max(1, picWidth, picHeight);
+        const scale = Math.min(1, faceMax / maxDim);
+        picWidth = Math.max(1, Math.round(picWidth * scale));
+        picHeight = Math.max(1, Math.round(picHeight * scale));
+      }
       const picElement = {
         md5HexStr: (copyFile && copyFile.md5) || md5Hex, 
-        picWidth: imageSize && imageSize.width,
-        picHeight: imageSize && imageSize.height,
+        picWidth,
+        picHeight,
         fileName: getFileName(newPath),
         fileSize: fileSize,
-        original: (Number(message && message.picSubType) === 1) ? false : true,
-        picType: (fileType && fileType.ext === 'gif') ? 2000 : 1000,
-        picSubType: (typeof message.picSubType === 'number' ? message.picSubType : 1),
+        original: isGif ? true : (isFaceMode ? false : true),
+        picType: (isGif || (fileType && fileType.ext === 'gif') || isFaceMode) ? 2000 : 1000,
+        picSubType: rawSubType,
         sourcePath: newPath,
         fileUuid: '',
         fileSubId: '',
         thumbFileSize: 0,
         thumbPath: undefined,
-        summary: '',
+        summary: isFaceMode ? '[表情]' : '[图片]',
       };
       return { elementType: 2, elementId: '', extBufForUI: new Uint8Array(), picElement };
     }
@@ -965,6 +2332,13 @@ try {
 
 async function le_sendMessage(peer, messages) {
 try { window.le_sendMessage = le_sendMessage; } catch (_) {}
+  // 优先通过主世界服务发送（若存在 leMainRequest），以兼容隔离世界无法直接访问 lite_tools 的情况
+  try {
+    if (typeof window.leMainRequest === 'function') {
+      const res = await window.leMainRequest('sendMessage', { peer, messages });
+      if (res) return res;
+    }
+  } catch (_) {}
   const lt = (globalThis && globalThis.lite_tools) || window.lite_tools;
   if (!lt || !peer || !messages || !messages.length) throw new Error('lite_tools/peer/messages missing');
   const converted = (await Promise.all(messages.map((m) => le_convertMessage(m)))).filter(Boolean);
@@ -1003,6 +2377,16 @@ function scanStoreForMsgElements(maxResults = 8) {
       if (store && store.state) roots.push({ v: store.state, path: 'store.state' });
     } catch (_) {}
 
+    // 新增：尝试从 DOM 获取 Vue 实例
+    try {
+      const appEl = document.getElementById('app');
+      if (appEl && appEl.__vue_app__) {
+        roots.push({ v: appEl.__vue_app__, path: '#app.__vue_app__' });
+        const st = appEl.__vue_app__.config?.globalProperties?.$store;
+        if (st && st.state) roots.push({ v: st.state, path: '#app.store.state' });
+      }
+    } catch (_) {}
+
     try {
       const hook = window.__VUE_DEVTOOLS_GLOBAL_HOOK__;
       if (hook && Array.isArray(hook.apps)) {
@@ -1035,6 +2419,53 @@ function scanStoreForMsgElements(maxResults = 8) {
       dbg('scanStore: no vue store; no devtools apps; fallback roots= 0');
     } else {
       dbg('scanStore: candidate roots=', roots.length);
+    }
+
+    // 尝试寻找 curAioData (BFS)
+    if (maxResults <= 8) { // 仅在寻找 peer (通常为5) 或调试时尝试
+       try {
+         const visited = new WeakSet();
+         const q = [];
+         roots.forEach(r => { if (r.v) q.push(r.v); });
+         if (window.app) q.push(window.app);
+         
+         let head = 0;
+         while(head < q.length && head < 5000) { // 限制搜索步数
+            const obj = q[head++];
+            if (!obj || typeof obj !== 'object') continue;
+            if (visited.has(obj)) continue;
+            visited.add(obj);
+            
+            // 检查 curAioData
+             const ca = obj.curAioData;
+             if (ca && (ca.chatType || (ca.peer && ca.peer.chatType))) {
+                 const uid = (ca.header && ca.header.uid) || ca.peerUid || (ca.peer && ca.peer.peerUid);
+                 const cType = ca.chatType || (ca.peer && ca.peer.chatType);
+                 if (uid && cType) {
+                     dbg('scanStore: found curAioData via BFS');
+                     return [{ peer: { peerUid: uid, chatType: cType, guildId: ca.guildId||'' } }];
+                 }
+             }
+             
+             // 检查 peer
+             if (obj.peerUid && obj.chatType) {
+                 // 排除不完整的
+                  dbg('scanStore: found peer-like object via BFS');
+                  return [{ peer: { peerUid: obj.peerUid, chatType: obj.chatType, guildId: obj.guildId||'' } }];
+             }
+
+            // 继续搜索子属性
+            const keys = Object.keys(obj);
+            for(const k of keys) {
+                const v = obj[k];
+                if (v && typeof v === 'object' && !visited.has(v)) {
+                    // 简单的启发式过滤：忽略 DOM 节点和巨大数组
+                    if (v instanceof Element) continue;
+                    q.push(v);
+                }
+            }
+         }
+       } catch(e) { dbg('scanStore: curAioData BFS error', e); }
     }
 
     const results = [];
@@ -1184,6 +2615,11 @@ function buildOverlay() {
   wrap.style.left = '0px';
   wrap.style.top = '0px';
   wrap.style.zIndex = '9999';
+  const guardSelection = () => {
+    try { ensureSelectionAtEditorEnd(getEditorEl()); } catch (_) {}
+  };
+  wrap.addEventListener('pointerdown', guardSelection, true);
+  wrap.addEventListener('mousedown', guardSelection, true);
 
   const card = document.createElement('div');
   card.className = 'le-qqnt-card';
@@ -1366,6 +2802,7 @@ function buildOverlay() {
       card.addEventListener('click', async (ev) => {
         const p = it.absPath || it.path;
         dbg('recent click:', p);
+        const isGif = /\.gif$/i.test(String(p || ''));
         let inserted = false;
         let sentOk = false;
         let cfg = null;
@@ -1374,30 +2811,47 @@ function buildOverlay() {
           cfg = window.localEmote.getConfig ? window.localEmote.getConfig() : null;
           if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode;
         } catch (e) { dbg('recent click: read config error', e && e.message); }
-        // 根据发送模式：仅多发需要经过输入框确认；其余模式直接发送
-        // 等待 lite_tools 与 peer 就绪，避免 haveNative 误判
+
+        // 尝试获取环境
         let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-        if ((sendMode === 'native' || (ev && ev.altKey)) && (!lt || !derivePeer())) {
+        let peer = await derivePeerAsync();
+        try { ensureSelectionAtEditorEnd(getEditorEl()); } catch (_) {}
+
+        // 判定是否必须走 Native：配置为native、按住Alt、或者文件是GIF
+        const needNative = (sendMode === 'native' || (ev && ev.altKey) || isGif);
+        const preferNative = (sendMode === 'image' && !isGif);
+
+        if ((needNative || preferNative) && (!lt || !peer)) {
+          // 重试机制：等待 peer 或 lt 就绪
           try {
-            const end = Date.now() + 800;
+            const end = Date.now() + 2000;
             while (Date.now() < end) {
-              await new Promise(r => setTimeout(r, 50));
+              await new Promise(r => setTimeout(r, 100));
               lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-              if (lt && derivePeer()) break;
+              peer = await derivePeerAsync();
+              if ((lt || typeof window.leMainRequest === 'function') && peer) break;
             }
           } catch (_) {}
         }
-        try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
-        const peer = derivePeer();
-        const haveNative = !!(lt && peer);
-        const doNative = (sendMode === 'native' && haveNative);
-        dbg('recent click: sendMode=', sendMode, 'haveNative=', haveNative, 'peer=', peer);
 
-        if ((sendMode === 'native' || (ev && ev.altKey)) && lt && peer) {
-          dbg('recent click: native mode');
+        try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
+        
+        const canNative = !!(peer && (lt || typeof window.leMainRequest === 'function'));
+        dbg('recent click: needNative=', needNative, 'canNative=', canNative, 'peer=', peer);
+
+        if (needNative && !canNative) {
+          // 必须原生发送但环境缺失
+          dbg('recent click: native required but env missing');
+          alert('无法获取当前会话信息，请尝试切换会话或重启 QQ');
+          return;
+        }
+
+        if (needNative && canNative) {
+          dbg('recent click: native mode execute');
           try {
+            // Standard/Native mode: picSubType=1, asFace=true
             const picSubType = 1;
-            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType }]);
+            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: true }]);
             sentOk = true;
             dbg('recent click: native send ok');
             try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -1408,8 +2862,28 @@ function buildOverlay() {
             dbg('recent click: native send error', e && e.message);
           }
           inserted = false;
+        } else if (preferNative && canNative) {
+          dbg('recent click: image mode native send');
+          try {
+            // Image mode: picSubType=0, asFace=false
+            const picSubType = 0;
+            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: false }]);
+            sentOk = true;
+            dbg('recent click: image native send ok');
+            try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
+            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
+            return;
+          } catch (e) {
+            sentOk = false;
+            dbg('recent click: image native send error', e && e.message);
+          }
+          inserted = false;
         } else {
-          dbg('recent click: multi/image mode');
+          if (needNative && !canNative) {
+            dbg('recent click: native required but env missing');
+            // GIF 环境缺失，不得不降级，但大概率是静态图
+          }
+          dbg('recent click: multi/image mode or fallback');
           inserted = tryInsertImageToEditor(p);
           dbg('recent click: tryInsertImageToEditor first ret=', inserted);
           if (inserted) { sentOk = true; }
@@ -1427,12 +2901,6 @@ function buildOverlay() {
         // 仅非多发模式下快速发送；多发模式只插入到编辑器等待手动确认
         const wantQuick = (sendMode !== 'multi');
         dbg('recent click: wantQuick=', wantQuick, 'inserted=', inserted);
-        
-        // 如果已经成功发送（native 模式），直接返回不执行后续逻辑
-        if (sentOk && sendMode === 'native') {
-          try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-          return;
-        }
         
         if (wantQuick) {
           // 将查找范围收敛到编辑器所在的对话容器，避免误点其他会话的“发送”
@@ -1536,35 +3004,53 @@ function buildOverlay() {
       card.addEventListener('click', async (ev) => {
         const p = it.absPath || it.path;
         dbg('grid click:', p, 'mode=', (window.localEmote.getConfig && window.localEmote.getConfig().sendMode));
+        const isGif = /\.gif$/i.test(String(p || ''));
         let inserted = false;
         let sentOk = false;
         // 依据发送模式处理：点击即发。优先原生（保真），否则走 image 自动发送
         let cfg = null;
         let sendMode = 'multi';
         try { cfg = window.localEmote.getConfig ? window.localEmote.getConfig() : null; if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode; } catch (e) { dbg('grid click: read config error', e && e.message); }
-        // 等待 lite_tools 与 peer 就绪，避免 haveNative 误判
+        
+        // 尝试获取环境
         let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-        if ((sendMode === 'native' || (ev && ev.altKey)) && (!lt || !derivePeer())) {
+        let peer = await derivePeerAsync();
+
+        // 判定是否必须走 Native
+        const needNative = (sendMode === 'native' || (ev && ev.altKey) || isGif);
+        const preferNative = (sendMode === 'image' && !isGif);
+
+        if ((needNative || preferNative) && (!lt || !peer)) {
+          // 重试机制：等待 peer 或 lt 就绪
           try {
-            const end = Date.now() + 800;
+            const end = Date.now() + 2000;
             while (Date.now() < end) {
-              await new Promise(r => setTimeout(r, 50));
+              await new Promise(r => setTimeout(r, 100));
               lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-              if (lt && derivePeer()) break;
+              peer = await derivePeerAsync();
+              if ((lt || typeof window.leMainRequest === 'function') && peer) break;
             }
           } catch (_) {}
         }
-        try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
-        const peer = derivePeer();
-        const haveNative = !!(lt && peer);
-        const doNative = (sendMode === 'native' && haveNative);
-        dbg('grid click: sendMode=', sendMode, 'haveNative=', haveNative, 'peer=', peer);
 
-        if ((sendMode === 'native' || (ev && ev.altKey)) && lt && peer) {
-          dbg('grid click: native mode');
+        try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
+        
+        const canNative = !!(peer && (lt || typeof window.leMainRequest === 'function'));
+        dbg('grid click: needNative=', needNative, 'canNative=', canNative, 'peer=', peer);
+
+        if (needNative && !canNative) {
+          // 必须原生发送但环境缺失：提示用户而不是静默失败
+          dbg('grid click: native required but env missing (no peer or lite_tools)');
+          alert('无法获取当前会话信息，请尝试切换会话或重启 QQ');
+          return; 
+        }
+
+        if (needNative && canNative) {
+          dbg('grid click: native mode execute');
           try {
+            // Standard/Native mode: picSubType=1 (local file), asFace=true
             const picSubType = 1;
-            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType }]);
+            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: true }]);
             sentOk = true;
             dbg('grid click: native send ok');
             try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -1572,9 +3058,29 @@ function buildOverlay() {
             return;
           } catch (e) {
             sentOk = false;
+            dbg('grid click: native send error', e && e.message);
+          }
+          inserted = false;
+        } else if (preferNative && canNative) {
+          dbg('grid click: image mode native send');
+          try {
+            // Image mode: picSubType=0 (local file), asFace=false
+            const picSubType = 0;
+            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: false }]);
+            sentOk = true;
+            dbg('grid click: image native send ok');
+            try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
+            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
+            return;
+          } catch (e) {
+            sentOk = false;
+            dbg('grid click: image native send error', e && e.message);
           }
           inserted = false;
         } else {
+          if (needNative && !canNative) {
+            dbg('grid click: native required but env missing');
+          }
           inserted = tryInsertImageToEditor(p);
           dbg('grid click: tryInsertImageToEditor first ret=', inserted);
           if (inserted) { sentOk = true; }
@@ -1593,12 +3099,6 @@ function buildOverlay() {
         const wantQuick = (sendMode !== 'multi');
         dbg('grid click: wantQuick=', wantQuick, 'inserted=', inserted);
         
-        // 如果已经成功发送（native 模式），直接返回不执行后续逻辑
-        if (sentOk && sendMode === 'native') {
-          try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-          return;
-        }
-
         if (wantQuick) {
           // 将查找范围收敛到编辑器所在的对话容器，避免误点其他会话的“发送”
           let scope = document;
@@ -1873,6 +3373,7 @@ function injectButton() {
   
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
+    try { ensureSelectionAtEditorEnd(getEditorEl()); } catch (_) {}
     const rect = btn.getBoundingClientRect();
     const ov = overlay.el;
     if (ov.style.display === 'none') overlay.show(rect); else overlay.hide();
@@ -1885,6 +3386,7 @@ function injectButton() {
 }
 
 document.addEventListener('keydown', onGlobalKeydown, true);
+try { installGlobalSelectionGuard(); } catch (_) {}
 
 // 首次尝试注入
 const tryInject = () => {
@@ -1892,6 +3394,17 @@ const tryInject = () => {
   injected = injectButton();
   dbg('tryInject: result', injected);
 };
+
+// 新增：监听主进程推送的 Peer 更新 (反向研究成果)
+if (window.localEmote && typeof window.localEmote.onUpdatePeer === 'function') {
+  window.localEmote.onUpdatePeer((peer) => {
+    if (peer && peer.peerUid && peer.chatType) {
+      window.__le_lastPeer = peer;
+      try { dbg('onUpdatePeer: updated from main', peer); } catch (_) {}
+    }
+  });
+}
+
 tryInject();
 
 // 监听 DOM 变化，确保路由切换后依然注入

@@ -289,13 +289,16 @@ function walkDirOnce(dir) {
 
 function toLocalUrl(filePath) {
   try {
-    const abs = filePath.replace(/\\/g, "/");
-    const profile = LiteLoader.path.profile.replace(/\\/g, "/");
-    const root = LiteLoader.path.root.replace(/\\/g, "/");
-    if (abs.startsWith(profile)) return "local://profile" + abs.slice(profile.length);
-    if (abs.startsWith(root)) return "local://root" + abs.slice(root.length);
-  } catch (_) {}
-  return `local:///${encodeURI(filePath.replace(/\\/g, "/"))}`;
+    const abs = String(filePath || "").replace(/\\/g, "/");
+    if (!abs) return "local:///";
+    const encoded = abs
+      .split("/")
+      .map((item) => encodeURIComponent(encodeURIComponent(item)))
+      .join("/");
+    return "local:///" + encoded;
+  } catch (_) {
+    return "local:///";
+  }
 }
 
 async function selectRootDir() {
@@ -393,4 +396,11 @@ contextBridge.exposeInMainWorld("localEmote", {
   clearIpcLog,
   // LiteLoader 路径（只读）
   paths: LiteLoader.path,
+  // 新增：Peer 更新监听
+  onUpdatePeer: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const handler = (_event, peer) => callback(peer);
+    ipcRenderer.on('localEmote:updatePeer', handler);
+    return () => ipcRenderer.removeListener('localEmote:updatePeer', handler);
+  },
 });
