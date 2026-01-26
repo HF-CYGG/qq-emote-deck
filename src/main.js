@@ -157,7 +157,7 @@ function pushCap(dir, channel, args, where, winId) {
 }
 
 function defaultConfig() {
-  return { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", recentLimit: 60, pinLimit: 12 };
+  return { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", recentLimit: 60, pinLimit: 12, imageContextMenu: true };
 }
 function readConfigSync() {
   try {
@@ -374,6 +374,32 @@ async function removeEmoji(category, filename) {
   }
 }
 
+async function copyToCategory(src, category) {
+  try {
+    if (!src || !category) return { ok: false, reason: "bad_args" };
+    const st = await fsp.stat(src).catch(() => null);
+    if (!st || !st.isFile() || st.size <= 0 || st.size > MAX_IMPORT_SIZE_BYTES) return { ok: false, reason: "bad_file" };
+    const ext = path.extname(src).toLowerCase();
+    if (!ALLOWED_EXT.has(ext)) return { ok: false, reason: "bad_ext" };
+    const header = await readHeaderBytes(src).catch(() => null);
+    if (!isValidImageMagic(header)) return { ok: false, reason: "bad_magic" };
+    const dir = resolveCategoryDir(category);
+    await fsp.mkdir(dir, { recursive: true });
+    const base = safeName(path.basename(src, ext)) + ext;
+    let dest = path.join(dir, base);
+    let i = 1;
+    while (fs.existsSync(dest)) {
+      dest = path.join(dir, safeName(path.basename(src, ext)) + `_${i}` + ext);
+      i++;
+    }
+    await fsp.copyFile(src, dest);
+    return { ok: true, name: path.basename(dest), absPath: dest, url: toLocalUrl(dest) };
+  } catch (e) {
+    log("copyToCategory error", src, category, e?.message || e);
+    return { ok: false, reason: "error" };
+  }
+}
+
 // 新增：扫描指定根目录下的所有包含图片的子文件夹，返回按名称排序的分组及首张预览图
 async function listPacksInDir(rootDir) {
   try {
@@ -432,6 +458,7 @@ ipcMain.handle("localEmote:deleteCategory", async (_e, name) => deleteCategory(n
 ipcMain.handle("localEmote:listEmojis", async (_e, cat) => listEmojis(cat));
 ipcMain.handle("localEmote:importEmojis", async (_e, cat) => importEmojis(cat));
 ipcMain.handle("localEmote:removeEmoji", async (_e, cat, file) => removeEmoji(cat, file));
+ipcMain.handle("localEmote:copyToCategory", async (_e, src, category) => copyToCategory(src, category));
 ipcMain.handle("localEmote:openDataDir", async () => {
   try {
     LiteLoader.api.openPath(PLUGIN_DATA_DIR);

@@ -3477,6 +3477,311 @@ const tryInject = () => {
   dbg('tryInject: result', injected);
 };
 
+const leContextMenuState = { lastImagePath: "", lastTs: 0 };
+const leSubMenuTimers = new Map();
+
+function leEnsureContextMenuStyle() {
+  if (document.getElementById('le-contextmenu-style')) return;
+  const style = document.createElement('style');
+  style.id = 'le-contextmenu-style';
+  style.textContent = `
+.le-sub-context-menu{position:fixed;top:var(--top);left:var(--left);z-index:10000;min-width:160px;max-width:320px;max-height:260px;display:none;background:var(--bg_transparent,#2b2b2b);color:var(--text_primary,#e5e7eb);border:1px solid rgba(0,0,0,.1);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);overflow:hidden}
+.le-sub-context-menu.show{display:block}
+.le-sub-context-menu .le-sub-scroll{max-height:260px;overflow:auto}
+.le-sub-context-menu .le-sub-item{padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap}
+.le-sub-context-menu .le-sub-item:hover{background:var(--bg_hover,rgba(0,0,0,.08))}
+.le-sub-context-menu .le-sub-arrow{margin-left:auto;opacity:.7}
+`;
+  document.head.appendChild(style);
+}
+
+function leFindCommonPrefix(paths) {
+  if (!paths.length) return "";
+  const splitPaths = paths.map((p) => String(p || "").split("\\").filter(Boolean));
+  const minLength = Math.min(...splitPaths.map((p) => p.length));
+  const commonPrefix = [];
+  for (let i = 0; i < minLength; i++) {
+    const currentPart = splitPaths[0][i];
+    if (splitPaths.every((p) => p[i] === currentPart)) commonPrefix.push(currentPart); else break;
+  }
+  return commonPrefix.join("\\");
+}
+
+function leBuildFolderTree(flatList) {
+  const tree = [];
+  const map = new Map();
+  const sortedList = [...flatList].sort((a, b) => String(a.path || "").localeCompare(String(b.path || ""), "en", { sensitivity: "base" }));
+  const commonPrefix = leFindCommonPrefix(sortedList.map((item) => item.path));
+  const prefixLength = commonPrefix ? commonPrefix.length + 1 : 0;
+  sortedList.forEach((item) => {
+    const adjustedPath = String(item.path || "").substring(prefixLength);
+    map.set(adjustedPath, { name: item.name, path: item.path, adjustedPath, children: [] });
+  });
+  sortedList.forEach((item) => {
+    const adjustedPath = String(item.path || "").substring(prefixLength);
+    const parts = adjustedPath.split("\\").filter(Boolean);
+    if (parts.length === 1) {
+      tree.push(map.get(adjustedPath));
+    } else {
+      const parentPath = parts.slice(0, -1).join("\\");
+      const parent = map.get(parentPath);
+      if (parent) {
+        parent.children.push(map.get(adjustedPath));
+      } else {
+        const virtualParentName = parts[parts.length - 2];
+        const virtualParent = { name: virtualParentName, path: (commonPrefix ? commonPrefix + "\\" : "") + parentPath, adjustedPath: parentPath, children: [map.get(adjustedPath)], virtual: true };
+        map.set(parentPath, virtualParent);
+        if (parts.length > 2) {
+          const grandParentPath = parts.slice(0, -2).join("\\");
+          const grandParent = map.get(grandParentPath);
+          if (grandParent) grandParent.children.push(virtualParent); else tree.push(virtualParent);
+        } else {
+          tree.push(virtualParent);
+        }
+      }
+    }
+  });
+  return tree;
+}
+
+function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
+  const subMenuEl = document.createElement("div");
+  const scrollEl = document.createElement("div");
+  scrollEl.classList.add("le-sub-scroll");
+  subMenuEl.appendChild(scrollEl);
+  subMenuEl.classList.add("le-sub-context-menu", `level-${level}`);
+  const menuId = `le-submenu-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  subMenuEl.setAttribute("data-menu-id", menuId);
+  parentEl.setAttribute("data-submenu-id", menuId);
+  subMenuEl.style.setProperty("--top", `0px`);
+  subMenuEl.style.setProperty("--left", `0px`);
+
+  const clearMenuTimer = (id) => {
+    const timer = leSubMenuTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      leSubMenuTimers.delete(id);
+    }
+  };
+  const setCloseTimer = (id, element) => {
+    clearMenuTimer(id);
+    const timer = setTimeout(() => {
+      element.classList.remove("show");
+      element.querySelectorAll(".le-sub-context-menu").forEach((child) => child.classList.remove("show"));
+    }, 260);
+    leSubMenuTimers.set(id, timer);
+  };
+
+  subMenuEl.addEventListener("mouseenter", () => {
+    clearMenuTimer(menuId);
+    subMenuEl.classList.add("show");
+    let currentEl = parentEl;
+    while (currentEl) {
+      const currentSubmenuId = currentEl.getAttribute("data-submenu-id");
+      if (currentSubmenuId) {
+        clearMenuTimer(currentSubmenuId);
+        const currentSubmenu = document.querySelector(`[data-menu-id="${currentSubmenuId}"]`);
+        if (currentSubmenu) currentSubmenu.classList.add("show");
+      }
+      if (currentEl.classList.contains("le-sub-item")) {
+        const parentSubmenu = currentEl.closest(".le-sub-context-menu");
+        if (parentSubmenu) {
+          const parentSubmenuId = parentSubmenu.getAttribute("data-menu-id");
+          if (parentSubmenuId) {
+            clearMenuTimer(parentSubmenuId);
+            parentSubmenu.classList.add("show");
+          }
+          currentEl = document.querySelector(`[data-submenu-id="${parentSubmenuId}"]`);
+        } else {
+          currentEl = null;
+        }
+      } else {
+        currentEl = null;
+      }
+    }
+  });
+
+  subMenuEl.addEventListener("mouseleave", (event) => {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget && parentEl.contains(relatedTarget)) return;
+    const childMenus = subMenuEl.querySelectorAll(".le-sub-context-menu");
+    for (let childMenu of childMenus) {
+      if (relatedTarget && childMenu.contains(relatedTarget)) return;
+    }
+    setCloseTimer(menuId, subMenuEl);
+  });
+
+  subMenuEl.addEventListener("wheel", (event) => {
+    event.stopPropagation();
+    const maxTop = scrollEl.offsetHeight - subMenuEl.offsetHeight + 8;
+    if (maxTop < 10) return;
+    let addValue = 30;
+    if (event.deltaY > 0) addValue = -30;
+    let offsetY = (parseFloat((scrollEl.style.transform || "translateY(0px)").split("translateY(")[1]) || 0) + addValue;
+    if (offsetY > 0) offsetY = 0;
+    if (offsetY < -maxTop) offsetY = -maxTop;
+    scrollEl.style.transform = `translateY(${offsetY}px)`;
+  });
+
+  menuItems.forEach((menuData) => {
+    const subMenuItemEl = document.createElement("div");
+    subMenuItemEl.classList.add("le-sub-item");
+    const textSpan = document.createElement("span");
+    textSpan.textContent = menuData.name;
+    textSpan.style.flexGrow = "1";
+    subMenuItemEl.appendChild(textSpan);
+    subMenuItemEl.menuData = menuData;
+    if (menuData.children && menuData.children.length > 0) {
+      subMenuItemEl.classList.add("has-submenu");
+      const arrowSpan = document.createElement("span");
+      arrowSpan.className = "le-sub-arrow";
+      arrowSpan.textContent = "›";
+      subMenuItemEl.appendChild(arrowSpan);
+      const childSubMenu = leCreateNestedSubMenu(subMenuItemEl, menuData.children, callback, level + 1);
+      subMenuItemEl.addEventListener("mouseenter", (event) => {
+        const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
+        clearMenuTimer(childMenuId);
+        const rect = event.currentTarget.getBoundingClientRect();
+        childSubMenu.classList.add("show");
+        childSubMenu.style.setProperty("--top", `${rect.y}px`);
+        childSubMenu.style.setProperty("--left", `${rect.x + rect.width}px`);
+      });
+      subMenuItemEl.addEventListener("mouseleave", (event) => {
+        const relatedTarget = event.relatedTarget;
+        const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
+        const childMenu = document.querySelector(`[data-menu-id="${childMenuId}"]`);
+        if (relatedTarget && childMenu && childMenu.contains(relatedTarget)) return;
+        if (childMenu) setCloseTimer(childMenuId, childMenu);
+      });
+    }
+    subMenuItemEl.addEventListener("click", (event) => {
+      event.stopPropagation();
+      callback(event, menuData);
+      leSubMenuTimers.clear();
+      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      document.querySelector(".q-context-menu")?.remove();
+    });
+    scrollEl.appendChild(subMenuItemEl);
+  });
+
+  parentEl.addEventListener("mouseenter", (event) => {
+    clearMenuTimer(menuId);
+    const rect = event.currentTarget.getBoundingClientRect();
+    subMenuEl.classList.add("show");
+    subMenuEl.style.setProperty("--top", `${rect.y}px`);
+    subMenuEl.style.setProperty("--left", `${rect.x + rect.width}px`);
+  });
+  parentEl.addEventListener("mouseleave", (event) => {
+    const relatedTarget = event.relatedTarget;
+    const submenuId = parentEl.getAttribute("data-submenu-id");
+    const submenu = document.querySelector(`[data-menu-id="${submenuId}"]`);
+    if (relatedTarget && submenu && submenu.contains(relatedTarget)) return;
+    setCloseTimer(menuId, subMenuEl);
+  });
+  document.body.appendChild(subMenuEl);
+  return subMenuEl;
+}
+
+function leAddQContextMenu(qContextMenu, title, subMenuList, callback) {
+  const contextItem = qContextMenu.querySelector(`:scope > :not(.menu-stickers-wrapper,[disabled="true"])`)?.cloneNode(true) ??
+    qContextMenu.querySelector(`.q-context-menu-item:not([disabled="true"])`)?.cloneNode(true);
+  if (!contextItem) return;
+  contextItem.classList.add("le-context-item");
+  if (contextItem.classList.contains("q-context-menu-item__text")) contextItem.innerText = title;
+  else {
+    const textEl = contextItem.querySelector(".q-context-menu-item__text");
+    if (textEl) textEl.innerText = title;
+  }
+  if (Array.isArray(subMenuList) && subMenuList.length) {
+    const tree = leBuildFolderTree(subMenuList);
+    leCreateNestedSubMenu(contextItem, tree, callback, 0);
+  } else if (typeof callback === "function") {
+    contextItem.addEventListener("click", () => callback());
+  }
+  qContextMenu.appendChild(contextItem);
+}
+
+function leDecodeLocalUrl(src) {
+  if (!src || typeof src !== "string") return "";
+  const decodePart = (part, twice) => {
+    let v = part;
+    try { v = decodeURIComponent(v); } catch (_) {}
+    if (twice) {
+      try { v = decodeURIComponent(v); } catch (_) {}
+    }
+    return v;
+  };
+  if (src.startsWith("local:///")) {
+    const raw = src.slice("local:///".length);
+    const parts = raw.split("/").filter((p) => p.length > 0).map((p) => decodePart(p, true));
+    const joined = parts.join("/");
+    return joined.replace(/\//g, "\\");
+  }
+  if (src.startsWith("file:///")) {
+    const raw = src.slice("file:///".length);
+    const parts = raw.split("/").filter((p) => p.length > 0).map((p) => decodePart(p, false));
+    const joined = parts.join("/");
+    return joined.replace(/\//g, "\\");
+  }
+  return "";
+}
+
+function leGetImagePathFromSrc(src) {
+  if (!src || typeof src !== "string") return "";
+  if (src.startsWith("local:///") || src.startsWith("file:///")) return leDecodeLocalUrl(src);
+  if (src.startsWith("qqface:")) return "";
+  if (src.startsWith("blob:") || src.startsWith("data:") || src.startsWith("http")) return "";
+  return src;
+}
+
+function leInstallImageContextMenu() {
+  if (window.__le_image_context_menu_installed) return;
+  window.__le_image_context_menu_installed = true;
+  leEnsureContextMenuStyle();
+  document.addEventListener("contextmenu", (e) => {
+    try {
+      const cfg = window.localEmote?.getConfig?.();
+      if (!cfg || cfg.imageContextMenu === false) return;
+      const target = e.target;
+      const img = target && (target.tagName === "IMG" ? target : (target.closest ? target.closest("img") : null));
+      if (!img) { leContextMenuState.lastImagePath = ""; return; }
+      const src = img.currentSrc || img.src || "";
+      const path = leGetImagePathFromSrc(src);
+      if (!path) { leContextMenuState.lastImagePath = ""; return; }
+      leContextMenuState.lastImagePath = path;
+      leContextMenuState.lastTs = Date.now();
+    } catch (_) {}
+  }, true);
+  const moCtx = new MutationObserver(() => {
+    const qContextMenu = document.querySelector(".q-context-menu:not(.le-context-menu)");
+    if (!qContextMenu) {
+      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      return;
+    }
+    qContextMenu.classList.add("le-context-menu");
+    const cfg = window.localEmote?.getConfig?.();
+    if (!cfg || cfg.imageContextMenu === false) return;
+    if (!leContextMenuState.lastImagePath || Date.now() - leContextMenuState.lastTs > 1500) return;
+    if (qContextMenu.querySelector(".le-context-item")) return;
+    const listPromise = window.localEmote?.listCategories?.();
+    if (!listPromise || typeof listPromise.then !== "function") return;
+    listPromise.then((list) => {
+      if (!Array.isArray(list) || list.length === 0) return;
+      const subMenuList = list.map((name) => {
+        const p = String(name || "");
+        const parts = p.split(/\\|\//).filter(Boolean);
+        return { name: parts[parts.length - 1] || p, path: p };
+      });
+      leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
+        const src = leContextMenuState.lastImagePath;
+        if (!src || !data?.path) return;
+        await window.localEmote.copyToCategory(src, data.path);
+      });
+    }).catch(() => {});
+  });
+  moCtx.observe(document.body, { childList: true, subtree: true });
+}
+
 // 新增：监听主进程推送的 Peer 更新 (反向研究成果)
 if (window.localEmote && typeof window.localEmote.onUpdatePeer === 'function') {
   window.localEmote.onUpdatePeer((peer) => {
@@ -3488,6 +3793,7 @@ if (window.localEmote && typeof window.localEmote.onUpdatePeer === 'function') {
 }
 
 tryInject();
+try { leInstallImageContextMenu(); } catch (_) {}
 
 // 监听 DOM 变化，确保路由切换后依然注入
 const mo = new MutationObserver(() => tryInject());
@@ -3536,6 +3842,7 @@ export const onSettingWindowCreated = (view) => {
           const openDataDirBtn = view.querySelector('#le-open-data-dir');
           const showNameSwitch = view.querySelector('#le-show-filename');
           const debugSwitch = view.querySelector('#le-debug');
+          const imageContextSwitch = view.querySelector('#le-image-contextmenu');
 
           if (versionEl) {
             try { versionEl.textContent = (LiteLoader.plugins?.["local_emotes"]?.manifest?.version) || ''; } catch (_) {}
@@ -3568,6 +3875,17 @@ export const onSettingWindowCreated = (view) => {
               newCfg.debug = !is;
               window.localEmote.setConfig(newCfg);
               try { dbg('config.debug set to', newCfg.debug); } catch (_) {}
+            });
+          }
+          if (imageContextSwitch) {
+            if (cfg.imageContextMenu !== false) imageContextSwitch.setAttribute('is-active', ''); else imageContextSwitch.removeAttribute('is-active');
+            imageContextSwitch.addEventListener('click', () => {
+              const is = imageContextSwitch.hasAttribute('is-active');
+              if (is) imageContextSwitch.removeAttribute('is-active'); else imageContextSwitch.setAttribute('is-active', '');
+              const newCfg = window.localEmote.getConfig();
+              newCfg.imageContextMenu = !is;
+              window.localEmote.setConfig(newCfg);
+              try { dbg('config.imageContextMenu set to', newCfg.imageContextMenu); } catch (_) {}
             });
           }
 
