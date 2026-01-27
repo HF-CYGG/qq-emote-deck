@@ -3574,6 +3574,18 @@ function leEnsureContextMenuStyle() {
   document.head.appendChild(style);
 }
 
+function leEnsureToastStyle() {
+  if (document.getElementById('le-toast-style')) return;
+  const style = document.createElement('style');
+  style.id = 'le-toast-style';
+  style.textContent = `
+.lite-tools-toast{display:flex;flex-direction:column;gap:8px;padding:8px 12px}
+.lite-tools-toast .lite-tools-toast-item{opacity:0;transform:translateY(-30px);height:0;transition:500ms}
+.lite-tools-toast .lite-tools-toast-item.lite-tools-toast-show{opacity:1;height:62px;transform:translateY(0)}
+`;
+  document.head.appendChild(style);
+}
+
 function leFindCommonPrefix(paths) {
   if (!paths.length) return "";
   const splitPaths = paths.map((p) => String(p || "").split("\\").filter(Boolean));
@@ -3733,7 +3745,7 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
         if (childMenu) setCloseTimer(childMenuId, childMenu);
       });
     }
-    subMenuItemEl.addEventListener("click", (event) => {
+    subMenuItemEl.addEventListener("mousedown", (event) => {
       event.stopPropagation();
       callback(event, menuData);
       leSubMenuTimers.clear();
@@ -3761,27 +3773,114 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
   return subMenuEl;
 }
 
-function leAddQContextMenu(qContextMenu, title, subMenuList, callback) {
+const leToastContentEl = `<div class="q-toast lite-tools-toast" style="position: fixed; z-index: 5000; top: 0px; left: 0px; pointer-events: none"></div>`;
+const leToastEl = `<div class="lite-tools-toast-item"><div class="q-toast-item">{{icon}}<span>{{content}}</span></div></div>`;
+const leDefaultIcon = `<i style="width:20px;height:20px; color:#0099ff;"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M14.5 8C14.5 11.5899 11.5899 14.5 8 14.5C4.41015 14.5 1.5 11.5899 1.5 8C1.5 4.41015 4.41015 1.5 8 1.5C11.5899 1.5 14.5 4.41015 14.5 8ZM8.5 6.5V11.5H7.5V6.5H8.5ZM8.5 5.5V4.5H7.5V5.5H8.5Z"></path></svg></i>`;
+const leSuccessIcon = `<i style="width:20px;height:20px; color:#15D173;"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 14.5C11.5899 14.5 14.5 11.5899 14.5 8C14.5 4.41015 11.5899 1.5 8 1.5C4.41015 1.5 1.5 4.41015 1.5 8C1.5 11.5899 4.41015 14.5 8 14.5ZM7.45232 10.2991L11.3555 6.35155L10.6445 5.64845L7.08919 9.2441L5.22771 7.44087L4.53193 8.15913L6.74888 10.3067L7.10435 10.651L7.45232 10.2991Z"></path></svg></i>`;
+const leErrorIcon = `<i style="width:20px;height:20px; color:#d11515;"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 14.5C11.5899 14.5 14.5 11.5899 14.5 8C14.5 4.41015 11.5899 1.5 8 1.5C4.41015 1.5 1.5 4.41015 1.5 8C1.5 11.5899 4.41015 14.5 8 14.5ZM8 4C8.55228 4 9 4.44772 9 5V9C9 9.55228 8.55228 10 8 10C7.44772 10 7 9.55228 7 9V5C7 4.44772 7.44772 4 8 4ZM8 11C8.55228 11 9 11.4477 9 12C9 12.5523 8.55228 13 8 13C7.44772 13 7 12.5523 7 12C7 11.4477 7.44772 11 8 11Z"></path></svg></i>`;
+
+function leGetIcon(type) {
+  switch (type) {
+    case "success": return leSuccessIcon;
+    case "error": return leErrorIcon;
+    case "none": return "";
+    default: return leDefaultIcon;
+  }
+}
+
+function leCreateToastEl(content, type) {
+  const newToastEl = leToastEl.replace("{{content}}", content).replace("{{icon}}", leGetIcon(type));
+  return new DOMParser().parseFromString(newToastEl, "text/html").querySelector(".lite-tools-toast-item");
+}
+
+let leToastContainer = null;
+function leEnsureToastContainer() {
+  if (leToastContainer && document.body.contains(leToastContainer)) return leToastContainer;
+  document.body.insertAdjacentHTML("beforeend", leToastContentEl);
+  leToastContainer = document.querySelector(".lite-tools-toast");
+  return leToastContainer;
+}
+
+function leShowToast(content, type, duration = 3000) {
+  leEnsureToastStyle();
+  const container = leEnsureToastContainer();
+  if (!container) return;
+  const toast = leCreateToastEl(content, type);
+  container.appendChild(toast);
+  // Force reflow
+  toast.offsetHeight;
+  toast.classList.add("lite-tools-toast-show");
+  
+  toast.close = function () {
+    clearTimeout(this.timeout);
+    toast.addEventListener("transitionend", () => this.remove(), { once: true });
+    this.classList.remove("lite-tools-toast-show");
+  };
+  
+  toast.timeout = setTimeout(() => toast.close(), duration);
+  return toast;
+}
+
+function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMainClick = false) {
   const contextItem = qContextMenu.querySelector(`:scope > :not(.menu-stickers-wrapper,[disabled="true"])`)?.cloneNode(true) ??
     qContextMenu.querySelector(`.q-context-menu-item:not([disabled="true"])`)?.cloneNode(true);
   if (!contextItem) return;
   contextItem.classList.add("le-context-item");
+  
+  // Clean up styles
+  contextItem.style.removeProperty("color");
+  
   if (contextItem.classList.contains("q-context-menu-item__text")) contextItem.innerText = title;
   else {
     const textEl = contextItem.querySelector(".q-context-menu-item__text");
     if (textEl) textEl.innerText = title;
   }
+  
+  let hasSubMenu = false;
   if (Array.isArray(subMenuList) && subMenuList.length) {
+    hasSubMenu = true;
+    // Add arrow icon if text element exists
+    if (contextItem.querySelector(".q-context-menu-item__text")) {
+      const subMenuIconEl = `<div class="q-context-menu-item__icon icon_next lite-tools-context-next-icon"><i class="q-icon"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.6953 3L10.7993 8.10522L5.6953 13.2104L5 12.5161L9.4098 8.10522L5 3.69439L5.6953 3Z"></path></svg></i></div>`;
+      contextItem.insertAdjacentHTML("beforeend", subMenuIconEl);
+    }
     const tree = leBuildFolderTree(subMenuList);
     leCreateNestedSubMenu(contextItem, tree, callback, 0);
   } else if (typeof callback === "function") {
-    contextItem.addEventListener("click", () => callback());
+    // No submenu, always click
+    contextItem.addEventListener("mousedown", (event) => {
+      event.stopPropagation();
+      callback(event);
+      leSubMenuTimers.clear();
+      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      qContextMenu.remove();
+    });
+    qContextMenu.appendChild(contextItem);
+    return;
   }
+  
+  // If submenu exists, only add click listener if allowMainClick is true
+  if (callback && (!hasSubMenu || allowMainClick)) {
+    contextItem.addEventListener("mousedown", (e) => {
+       e.stopPropagation();
+       callback(e);
+       leSubMenuTimers.clear();
+       document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+       qContextMenu.remove();
+    });
+  }
+  
   qContextMenu.appendChild(contextItem);
 }
 
 function leDecodeLocalUrl(src) {
   if (!src || typeof src !== "string") return "";
+  // Strip query and hash
+  const qIdx = src.indexOf("?");
+  if (qIdx >= 0) src = src.slice(0, qIdx);
+  const hIdx = src.indexOf("#");
+  if (hIdx >= 0) src = src.slice(0, hIdx);
+
   const decodePart = (part, twice) => {
     let v = part;
     try { v = decodeURIComponent(v); } catch (_) {}
@@ -3789,6 +3888,21 @@ function leDecodeLocalUrl(src) {
       try { v = decodeURIComponent(v); } catch (_) {}
     }
     return v;
+  };
+  const decodeWhole = (value, twice) => {
+    let v = value;
+    try { v = decodeURIComponent(v); } catch (_) {}
+    if (twice) {
+      try { v = decodeURIComponent(v); } catch (_) {}
+    }
+    return v;
+  };
+  const normalizeAppimgPath = (raw) => {
+    let v = decodeWhole(raw, true);
+    const driveIdx = v.search(/[A-Za-z]:[\\/]/);
+    if (driveIdx >= 0) v = v.slice(driveIdx);
+    v = v.replace(/^\/+/, "");
+    return v.replace(/\//g, "\\");
   };
   if (src.startsWith("local:///")) {
     const raw = src.slice("local:///".length);
@@ -3802,12 +3916,20 @@ function leDecodeLocalUrl(src) {
     const joined = parts.join("/");
     return joined.replace(/\//g, "\\");
   }
+  if (src.startsWith("appimg:///")) {
+    const raw = src.slice("appimg:///".length);
+    return normalizeAppimgPath(raw);
+  }
+  if (src.startsWith("appimg://")) {
+    const raw = src.slice("appimg://".length);
+    return normalizeAppimgPath(raw);
+  }
   return "";
 }
 
 function leGetImagePathFromSrc(src) {
   if (!src || typeof src !== "string") return "";
-  if (src.startsWith("local:///") || src.startsWith("file:///")) return leDecodeLocalUrl(src);
+  if (src.startsWith("local:///") || src.startsWith("file:///") || src.startsWith("appimg://")) return leDecodeLocalUrl(src);
   if (src.startsWith("qqface:")) return "";
   if (src.startsWith("blob:") || src.startsWith("data:") || src.startsWith("http")) return "";
   return src;
@@ -3823,16 +3945,29 @@ function leInstallImageContextMenu() {
       if (!cfg || cfg.imageContextMenu === false) return;
       const target = e.target;
       const img = target && (target.tagName === "IMG" ? target : (target.closest ? target.closest("img") : null));
-      if (!img) { leContextMenuState.lastImagePath = ""; return; }
-      const src = img.currentSrc || img.src || "";
+      if (!img) { 
+        // try to find in message container if not directly img
+        // but for now just return
+        leContextMenuState.lastImagePath = ""; 
+        return; 
+      }
+      const src = img.currentSrc || img.src || img.getAttribute?.("data-src") || img.getAttribute?.("data-original") || img.getAttribute?.("data-origin") || img.getAttribute?.("data-src-original") || "";
       const path = leGetImagePathFromSrc(src);
-      if (!path) { leContextMenuState.lastImagePath = ""; return; }
+      try { dbg('contextmenu: img detected', { src: src ? src.slice(0, 50) : '', path, tagName: img.tagName }); } catch (_) {}
+      
+      if (!path) { 
+        leContextMenuState.lastImagePath = ""; 
+        return; 
+      }
       leContextMenuState.lastImagePath = path;
       leContextMenuState.lastTs = Date.now();
-    } catch (_) {}
+    } catch (e) {
+      try { dbg('contextmenu error', e); } catch (_) {}
+    }
   }, true);
   const moCtx = new MutationObserver(() => {
-    const qContextMenu = document.querySelector(".q-context-menu:not(.le-context-menu)");
+    try {
+      const qContextMenu = document.querySelector(".q-context-menu:not(.le-context-menu)");
     if (!qContextMenu) {
       document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
       return;
@@ -3843,20 +3978,63 @@ function leInstallImageContextMenu() {
     if (!leContextMenuState.lastImagePath || Date.now() - leContextMenuState.lastTs > 1500) return;
     if (qContextMenu.querySelector(".le-context-item")) return;
     const listPromise = window.localEmote?.listCategories?.();
-    if (!listPromise || typeof listPromise.then !== "function") return;
-    listPromise.then((list) => {
-      if (!Array.isArray(list) || list.length === 0) return;
-      const subMenuList = list.map((name) => {
-        const p = String(name || "");
-        const parts = p.split(/\\|\//).filter(Boolean);
-        return { name: parts[parts.length - 1] || p, path: p };
+      if (!listPromise || typeof listPromise.then !== "function") return;
+      listPromise.then((list) => {
+        let subMenuList = [];
+        if (Array.isArray(list) && list.length > 0) {
+          subMenuList = list.map((name) => {
+            const p = String(name || "");
+            const parts = p.split(/\\|\//).filter(Boolean);
+            return { name: parts[parts.length - 1] || p, path: p };
+          });
+        } else {
+          // Fallback if no categories exist
+          subMenuList = [{ name: "默认", path: "Default" }];
+        }
+        leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
+          try {
+            const src = leContextMenuState.lastImagePath;
+            let targetPath = data?.path;
+            
+            // Handle main menu click (no data)
+            if (!targetPath) {
+               const cfg = window.localEmote?.getConfig?.();
+               targetPath = cfg?.lastCategory || "Default";
+               dbg('contextmenu: main click, using default path', targetPath);
+            }
+            
+            dbg('contextmenu: clicked', { src: src ? src.slice(0, 50) : '', path: targetPath });
+            if (!src) {
+              dbg('contextmenu: no source image path');
+              leShowToast('保存失败: 找不到图片路径', 'error');
+              return;
+            }
+            if (!targetPath) {
+              dbg('contextmenu: no target category path');
+              leShowToast('保存失败: 未选择分类', 'error');
+              return;
+            }
+            const res = await window.localEmote.copyToCategory(src, targetPath);
+            dbg('contextmenu: copy result', res);
+            if (!res || !res.ok) {
+              const msg = '保存失败: ' + (res?.reason || '未知错误');
+              console.error(msg);
+              leShowToast(msg, 'error');
+            } else {
+              // success
+              leShowToast('保存成功', 'success');
+            }
+          } catch (e) {
+            dbg('contextmenu: click handler error', e);
+            leShowToast('保存出错: ' + e.message, 'error');
+          }
+        }, true);
+      }).catch((e) => {
+        try { dbg('listCategories failed', e); } catch (_) {}
       });
-      leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
-        const src = leContextMenuState.lastImagePath;
-        if (!src || !data?.path) return;
-        await window.localEmote.copyToCategory(src, data.path);
-      });
-    }).catch(() => {});
+    } catch (e) {
+      try { dbg('contextmenu mutation error', e); } catch (_) {}
+    }
   });
   moCtx.observe(document.body, { childList: true, subtree: true });
 }

@@ -376,13 +376,31 @@ async function removeEmoji(category, filename) {
 
 async function copyToCategory(src, category) {
   try {
+    log("copyToCategory called", src, category);
     if (!src || !category) return { ok: false, reason: "bad_args" };
     const st = await fsp.stat(src).catch(() => null);
-    if (!st || !st.isFile() || st.size <= 0 || st.size > MAX_IMPORT_SIZE_BYTES) return { ok: false, reason: "bad_file" };
+    if (!st) {
+      log("copyToCategory: file not found", src);
+      return { ok: false, reason: "file_not_found" };
+    }
+    if (!st.isFile()) {
+      log("copyToCategory: not a file", src);
+      return { ok: false, reason: "not_a_file" };
+    }
+    if (st.size <= 0 || st.size > MAX_IMPORT_SIZE_BYTES) {
+      log("copyToCategory: bad size", src, st.size);
+      return { ok: false, reason: "bad_size" };
+    }
     const ext = path.extname(src).toLowerCase();
-    if (!ALLOWED_EXT.has(ext)) return { ok: false, reason: "bad_ext" };
+    if (!ALLOWED_EXT.has(ext)) {
+      log("copyToCategory: bad ext", src, ext);
+      return { ok: false, reason: "bad_ext" };
+    }
     const header = await readHeaderBytes(src).catch(() => null);
-    if (!isValidImageMagic(header)) return { ok: false, reason: "bad_magic" };
+    if (!isValidImageMagic(header)) {
+      log("copyToCategory: bad magic", src, header ? header.toString('hex') : 'null');
+      return { ok: false, reason: "bad_magic" };
+    }
     const dir = resolveCategoryDir(category);
     await fsp.mkdir(dir, { recursive: true });
     const base = safeName(path.basename(src, ext)) + ext;
@@ -393,10 +411,11 @@ async function copyToCategory(src, category) {
       i++;
     }
     await fsp.copyFile(src, dest);
+    log("copyToCategory success", dest);
     return { ok: true, name: path.basename(dest), absPath: dest, url: toLocalUrl(dest) };
   } catch (e) {
     log("copyToCategory error", src, category, e?.message || e);
-    return { ok: false, reason: "error" };
+    return { ok: false, reason: "error: " + (e?.message || e) };
   }
 }
 
