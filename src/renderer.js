@@ -3564,7 +3564,7 @@ function leEnsureContextMenuStyle() {
   const style = document.createElement('style');
   style.id = 'le-contextmenu-style';
   style.textContent = `
-.le-sub-context-menu{position:fixed;top:var(--top);left:var(--left);z-index:10000;min-width:160px;max-width:320px;max-height:260px;display:none;background:var(--bg_transparent,#2b2b2b);color:var(--text_primary,#e5e7eb);border:1px solid rgba(0,0,0,.1);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);overflow:hidden}
+.le-sub-context-menu{position:fixed;top:var(--top);left:var(--left);z-index:100000;min-width:160px;max-width:320px;max-height:260px;display:none;background:var(--bg_transparent,#2b2b2b);color:var(--text_primary,#e5e7eb);border:1px solid rgba(0,0,0,.1);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);overflow:hidden}
 .le-sub-context-menu.show{display:block}
 .le-sub-context-menu .le-sub-scroll{max-height:260px;overflow:auto}
 .le-sub-context-menu .le-sub-item{padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap}
@@ -3663,7 +3663,7 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
     leSubMenuTimers.set(id, timer);
   };
 
-  subMenuEl.addEventListener("mouseenter", () => {
+  const openMenuAt = (event) => {
     clearMenuTimer(menuId);
     subMenuEl.classList.add("show");
     let currentEl = parentEl;
@@ -3690,7 +3690,16 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
         currentEl = null;
       }
     }
-  });
+    if (event && event.currentTarget && event.currentTarget.getBoundingClientRect) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      subMenuEl.style.setProperty("--top", `${rect.y}px`);
+      subMenuEl.style.setProperty("--left", `${rect.x + rect.width}px`);
+    }
+  };
+
+  subMenuEl.addEventListener("mouseenter", openMenuAt);
+  subMenuEl.addEventListener("pointerenter", openMenuAt);
+  subMenuEl.addEventListener("mousemove", openMenuAt);
 
   subMenuEl.addEventListener("mouseleave", (event) => {
     const relatedTarget = event.relatedTarget;
@@ -3729,14 +3738,17 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
       arrowSpan.textContent = "›";
       subMenuItemEl.appendChild(arrowSpan);
       const childSubMenu = leCreateNestedSubMenu(subMenuItemEl, menuData.children, callback, level + 1);
-      subMenuItemEl.addEventListener("mouseenter", (event) => {
+      const openChildMenu = (event) => {
         const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
         clearMenuTimer(childMenuId);
         const rect = event.currentTarget.getBoundingClientRect();
         childSubMenu.classList.add("show");
         childSubMenu.style.setProperty("--top", `${rect.y}px`);
         childSubMenu.style.setProperty("--left", `${rect.x + rect.width}px`);
-      });
+      };
+      subMenuItemEl.addEventListener("mouseenter", openChildMenu);
+      subMenuItemEl.addEventListener("pointerenter", openChildMenu);
+      subMenuItemEl.addEventListener("mousemove", openChildMenu);
       subMenuItemEl.addEventListener("mouseleave", (event) => {
         const relatedTarget = event.relatedTarget;
         const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
@@ -3745,7 +3757,7 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
         if (childMenu) setCloseTimer(childMenuId, childMenu);
       });
     }
-    subMenuItemEl.addEventListener("mousedown", (event) => {
+    leBindContextActivate(subMenuItemEl, (event) => {
       event.stopPropagation();
       callback(event, menuData);
       leSubMenuTimers.clear();
@@ -3755,13 +3767,16 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
     scrollEl.appendChild(subMenuItemEl);
   });
 
-  parentEl.addEventListener("mouseenter", (event) => {
+  const openFromParent = (event) => {
     clearMenuTimer(menuId);
     const rect = event.currentTarget.getBoundingClientRect();
     subMenuEl.classList.add("show");
     subMenuEl.style.setProperty("--top", `${rect.y}px`);
     subMenuEl.style.setProperty("--left", `${rect.x + rect.width}px`);
-  });
+  };
+  parentEl.addEventListener("mouseenter", openFromParent);
+  parentEl.addEventListener("pointerenter", openFromParent);
+  parentEl.addEventListener("mousemove", openFromParent);
   parentEl.addEventListener("mouseleave", (event) => {
     const relatedTarget = event.relatedTarget;
     const submenuId = parentEl.getAttribute("data-submenu-id");
@@ -3821,6 +3836,21 @@ function leShowToast(content, type, duration = 3000) {
   return toast;
 }
 
+function leBindContextActivate(el, handler) {
+  if (!el || typeof handler !== "function") return;
+  const onActivate = (event) => {
+    if (event && event.__le_handled) return;
+    if (event) event.__le_handled = true;
+    const now = Date.now();
+    if (el.__le_lastFire && now - el.__le_lastFire < 300) return;
+    el.__le_lastFire = now;
+    handler(event);
+  };
+  el.addEventListener("pointerdown", onActivate, true);
+  el.addEventListener("mousedown", onActivate, true);
+  el.addEventListener("click", onActivate, true);
+}
+
 function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMainClick = false) {
   const contextItem = qContextMenu.querySelector(`:scope > :not(.menu-stickers-wrapper,[disabled="true"])`)?.cloneNode(true) ??
     qContextMenu.querySelector(`.q-context-menu-item:not([disabled="true"])`)?.cloneNode(true);
@@ -3848,7 +3878,7 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
     leCreateNestedSubMenu(contextItem, tree, callback, 0);
   } else if (typeof callback === "function") {
     // No submenu, always click
-    contextItem.addEventListener("mousedown", (event) => {
+    leBindContextActivate(contextItem, (event) => {
       event.stopPropagation();
       callback(event);
       leSubMenuTimers.clear();
@@ -3861,12 +3891,12 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
   
   // If submenu exists, only add click listener if allowMainClick is true
   if (callback && (!hasSubMenu || allowMainClick)) {
-    contextItem.addEventListener("mousedown", (e) => {
-       e.stopPropagation();
-       callback(e);
-       leSubMenuTimers.clear();
-       document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
-       qContextMenu.remove();
+    leBindContextActivate(contextItem, (e) => {
+      e.stopPropagation();
+      callback(e);
+      leSubMenuTimers.clear();
+      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      qContextMenu.remove();
     });
   }
   
@@ -3977,20 +4007,28 @@ function leInstallImageContextMenu() {
     if (!cfg || cfg.imageContextMenu === false) return;
     if (!leContextMenuState.lastImagePath || Date.now() - leContextMenuState.lastTs > 1500) return;
     if (qContextMenu.querySelector(".le-context-item")) return;
-    const listPromise = window.localEmote?.listCategories?.();
+    const listPromise = (async () => {
+      const cfg = window.localEmote?.getConfig?.();
+      const rootDir = cfg?.rootDir;
+      let packs = [];
+      if (rootDir && window.localEmote?.listPacksInDir) {
+        try { packs = await window.localEmote.listPacksInDir(rootDir); } catch (_) { packs = []; }
+      }
+      if (Array.isArray(packs) && packs.length > 0) {
+        return packs.map((p) => ({ name: p?.name || (p?.dir ? String(p.dir).split(/[\\/]/).pop() : ""), path: `__dir__|${p?.dir || p?.path || ""}` }));
+      }
+      const list = await window.localEmote?.listCategories?.();
+      if (Array.isArray(list) && list.length > 0) {
+        return list.map((name) => {
+          const p = String(name || "");
+          const parts = p.split(/\\|\//).filter(Boolean);
+          return { name: parts[parts.length - 1] || p, path: p };
+        });
+      }
+      return [{ name: "默认", path: "Default" }];
+    })();
       if (!listPromise || typeof listPromise.then !== "function") return;
-      listPromise.then((list) => {
-        let subMenuList = [];
-        if (Array.isArray(list) && list.length > 0) {
-          subMenuList = list.map((name) => {
-            const p = String(name || "");
-            const parts = p.split(/\\|\//).filter(Boolean);
-            return { name: parts[parts.length - 1] || p, path: p };
-          });
-        } else {
-          // Fallback if no categories exist
-          subMenuList = [{ name: "默认", path: "Default" }];
-        }
+      listPromise.then((subMenuList) => {
         leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
           try {
             const src = leContextMenuState.lastImagePath;
@@ -4014,6 +4052,13 @@ function leInstallImageContextMenu() {
               leShowToast('保存失败: 未选择分类', 'error');
               return;
             }
+            try {
+              const cfg = window.localEmote?.getConfig?.();
+              if (cfg) {
+                cfg.lastCategory = targetPath;
+                window.localEmote.setConfig(cfg);
+              }
+            } catch (_) {}
             const res = await window.localEmote.copyToCategory(src, targetPath);
             dbg('contextmenu: copy result', res);
             if (!res || !res.ok) {
@@ -4022,7 +4067,8 @@ function leInstallImageContextMenu() {
               leShowToast(msg, 'error');
             } else {
               // success
-              leShowToast('保存成功', 'success');
+              const label = (data && data.name) || res?.category || (targetPath ? String(targetPath).split(/[\\/]/).pop() : '');
+              leShowToast(label ? `保存成功：${label}` : '保存成功', 'success');
             }
           } catch (e) {
             dbg('contextmenu: click handler error', e);

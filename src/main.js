@@ -401,8 +401,33 @@ async function copyToCategory(src, category) {
       log("copyToCategory: bad magic", src, header ? header.toString('hex') : 'null');
       return { ok: false, reason: "bad_magic" };
     }
-    const dir = resolveCategoryDir(category);
-    await fsp.mkdir(dir, { recursive: true });
+    let dir = "";
+    let categoryName = String(category || "");
+    if (categoryName.startsWith("__dir__|")) {
+      const rawDir = categoryName.slice("__dir__|".length);
+      if (!rawDir) return { ok: false, reason: "bad_category" };
+      const absDir = path.resolve(rawDir);
+      const cfg = readConfigSync();
+      if (cfg && cfg.rootDir) {
+        const rootAbs = path.resolve(cfg.rootDir);
+        const rel = path.relative(rootAbs, absDir);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) {
+          log("copyToCategory: dir outside root", absDir, rootAbs);
+          return { ok: false, reason: "dir_outside_root" };
+        }
+      }
+      const dstStat = await fsp.stat(absDir).catch(() => null);
+      if (dstStat && !dstStat.isDirectory()) {
+        log("copyToCategory: target not dir", absDir);
+        return { ok: false, reason: "bad_category" };
+      }
+      await fsp.mkdir(absDir, { recursive: true });
+      dir = absDir;
+      categoryName = path.basename(absDir);
+    } else {
+      dir = resolveCategoryDir(categoryName);
+      await fsp.mkdir(dir, { recursive: true });
+    }
     const base = safeName(path.basename(src, ext)) + ext;
     let dest = path.join(dir, base);
     let i = 1;
@@ -412,7 +437,7 @@ async function copyToCategory(src, category) {
     }
     await fsp.copyFile(src, dest);
     log("copyToCategory success", dest);
-    return { ok: true, name: path.basename(dest), absPath: dest, url: toLocalUrl(dest) };
+    return { ok: true, name: path.basename(dest), absPath: dest, url: toLocalUrl(dest), category: categoryName, dir };
   } catch (e) {
     log("copyToCategory error", src, category, e?.message || e);
     return { ok: false, reason: "error: " + (e?.message || e) };
