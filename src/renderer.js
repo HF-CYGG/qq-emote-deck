@@ -696,37 +696,45 @@ function injectLEStylesOnce() {
   style.textContent = `
   /* 主题变量（亮/暗） */
   :root {
-    --le-bg: #fff;
+    --le-bg: rgba(255,255,255,.78);
+    --le-bg-top: rgba(255,255,255,.92);
+    --le-bg-bottom: rgba(255,255,255,.7);
     --le-fg: #111827;
     --le-muted: #6b7280;
     --le-border: rgba(0,0,0,.08);
     --le-hover-bg: rgba(0,0,0,.05);
     --le-active-bg: rgba(0,0,0,.08);
-    --le-header-bg: #fafafa;
-    --le-input-bg: #fff;
+    --le-header-bg: rgba(255,255,255,.6);
+    --le-input-bg: rgba(255,255,255,.72);
     --le-divider: rgba(0,0,0,.06);
     --le-icon: #4b5563;
     --le-icon-hover: #111827;
     --le-primary: #2563eb;
     --le-focus: rgba(37,99,235,.25);
     --le-image-border: rgba(0,0,0,.08);
+    --le-blur: 14px;
+    --le-glow: rgba(255,255,255,.4);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --le-bg: #1f2937;
+      --le-bg: rgba(17,24,39,.72);
+      --le-bg-top: rgba(31,41,55,.85);
+      --le-bg-bottom: rgba(17,24,39,.66);
       --le-fg: #e5e7eb;
       --le-muted: #9ca3af;
       --le-border: rgba(255,255,255,.08);
       --le-hover-bg: rgba(255,255,255,.06);
       --le-active-bg: rgba(255,255,255,.10);
-      --le-header-bg: rgba(255,255,255,.03);
-      --le-input-bg: #111827;
+      --le-header-bg: rgba(17,24,39,.55);
+      --le-input-bg: rgba(17,24,39,.62);
       --le-divider: rgba(255,255,255,.06);
       --le-icon: #cfd4dc;
       --le-icon-hover: #fff;
       --le-primary: #60a5fa;
       --le-focus: rgba(96,165,250,.35);
       --le-image-border: rgba(255,255,255,.10);
+      --le-blur: 16px;
+      --le-glow: rgba(255,255,255,.12);
     }
   }
 
@@ -748,12 +756,14 @@ function injectLEStylesOnce() {
 
   /* 悬浮面板整体 */
   #local-emote-overlay.le-overlay {
-    background: var(--le-bg) !important;
+    background: linear-gradient(180deg, var(--le-bg-top), var(--le-bg-bottom)) !important;
     color: var(--le-fg) !important;
     border: 1px solid var(--le-border) !important;
-    box-shadow: 0 12px 30px rgba(0,0,0,.22) !important;
+    box-shadow: 0 20px 48px rgba(0,0,0,.25), inset 0 0 0 1px var(--le-glow) !important;
     border-radius: 10px !important;
     overflow: hidden !important;
+    backdrop-filter: blur(var(--le-blur)) saturate(130%) !important;
+    -webkit-backdrop-filter: blur(var(--le-blur)) saturate(130%) !important;
   }
   #local-emote-overlay .le-header {
     display: flex; align-items: center; gap: 8px; padding: 10px;
@@ -808,9 +818,11 @@ function injectLEStylesOnce() {
     padding: 6px;
     border-radius: 10px;
     border: 1px solid var(--le-border);
-    background: var(--le-bg);
-    box-shadow: 0 12px 30px rgba(0,0,0,.22);
+    background: linear-gradient(180deg, var(--le-bg-top), var(--le-bg-bottom));
+    box-shadow: 0 18px 40px rgba(0,0,0,.24), inset 0 0 0 1px var(--le-glow);
     pointer-events: none;
+    backdrop-filter: blur(var(--le-blur)) saturate(130%);
+    -webkit-backdrop-filter: blur(var(--le-blur)) saturate(130%);
   }
   #local-emote-hover-preview img {
     width: 160px;
