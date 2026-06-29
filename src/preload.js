@@ -1,4 +1,10 @@
 const { contextBridge, ipcRenderer } = require("electron");
+const {
+  DEFAULT_CONFIG,
+  isMeaningfulConfig,
+  mergeConfigPatch,
+  sanitizeConfig,
+} = require("./config-utils");
 /* path module removed: provide string helpers instead */
 function basename(p) {
   try {
@@ -16,10 +22,8 @@ function extname(p) {
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".apng", ".bmp"]);
 
-// 支持的配置键新增 pinned、hotkey、gridCols、showFileName、sendMode、debug
-const CONFIG_KEYS = new Set(["rootDir", "recent", "lastCategory", "pinned", "hotkey", "gridCols", "showFileName", "sendMode", "debug", "recentLimit", "pinLimit", "imageContextMenu", "hoverPreview"]);
-const RECENT_LIMIT = 60;
-const PIN_LIMIT = 12;
+const RECENT_LIMIT = DEFAULT_CONFIG.recentLimit;
+const PIN_LIMIT = DEFAULT_CONFIG.pinLimit;
 
 // 本地存储兜底 + 主进程同步持久化
 const LS_KEY = "local_emotes_config";
@@ -31,126 +35,43 @@ function readLSConfig() {
     return obj && typeof obj === "object" ? obj : null;
   } catch (_) { return null; }
 }
-function writeLSConfig(obj) {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(obj || {}));
-    return true;
-  } catch (_) { return false; }
-}
 function readConfigSyncIPC(def) {
   try { return ipcRenderer.sendSync("localEmote:getConfigSync", def) } catch (_) { return def; }
 }
 function writeConfigSyncIPC(cfg) {
   try { return !!ipcRenderer.sendSync("localEmote:setConfigSync", cfg) } catch (_) { return false; }
 }
-
-function hasMeaningful(cfg, def) {
-  try {
-    if (!cfg || typeof cfg !== 'object') return false;
-    if (!def) def = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true, hoverPreview: true };
-    if (cfg.rootDir && typeof cfg.rootDir === 'string') return true;
-    if (Array.isArray(cfg.recent) && cfg.recent.length) return true;
-    if (Array.isArray(cfg.pinned) && cfg.pinned.length) return true;
-
-    if (typeof cfg.lastCategory === 'string' && cfg.lastCategory) return true;
-    if (typeof cfg.hotkey === 'string' && cfg.hotkey && cfg.hotkey !== def.hotkey) return true;
-    if (Number.isFinite(cfg.gridCols) && cfg.gridCols !== def.gridCols) return true;
-    if (typeof cfg.showFileName === 'boolean' && cfg.showFileName !== def.showFileName) return true;
-    if (typeof cfg.sendMode === 'string' && cfg.sendMode !== def.sendMode) return true;
-    if (cfg.debug === true) return true;
-    if (Number.isFinite(cfg.recentLimit) && cfg.recentLimit !== def.recentLimit) return true;
-    if (Number.isFinite(cfg.pinLimit) && cfg.pinLimit !== def.pinLimit) return true;
-    if (typeof cfg.imageContextMenu === 'boolean' && cfg.imageContextMenu !== def.imageContextMenu) return true;
-    if (typeof cfg.hoverPreview === 'boolean' && cfg.hoverPreview !== def.hoverPreview) return true;
-    return false;
-  } catch (_) { return false; }
+function importBrowserConfigSyncIPC(cfg) {
+  try { return ipcRenderer.sendSync("localEmote:importBrowserConfigSync", cfg) } catch (_) { return null; }
 }
+function cloneConfig(cfg) {
+  const sanitized = sanitizeConfig(cfg);
+  return { ...sanitized, recent: sanitized.recent.slice(), pinned: sanitized.pinned.slice() };
+}
+
+let configCache = null;
+let browserConfigImportTried = false;
 
 function getConfig() {
-  const defaultConfig = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true, hoverPreview: true };
-
-  // 分别读取三个来源（都做 sanitize，避免脏数据污染）
-  const fromIPC = sanitizeConfig(readConfigSyncIPC(defaultConfig) || {});
-  let fromLL = null;
-  try { fromLL = sanitizeConfig(LiteLoader.api.config.get("local_emotes", defaultConfig) || {}); } catch (_) { fromLL = null; }
-  const lsRaw = readLSConfig();
-  const fromLS = lsRaw ? sanitizeConfig(lsRaw) : null;
-
-  // 统一合并：本地默认 < 本地存储 < LiteLoader 配置 < 主进程/文件（以主进程为最终权威）
-  const merged = Object.assign({}, defaultConfig, fromLS || {}, fromLL || {}, fromIPC || {});
-  const chosen = sanitizeConfig(merged);
-
-  // 回写到各存储，保持一致
-  try { writeConfigSyncIPC(chosen); } catch (_) {}
-  try { LiteLoader.api.config.set("local_emotes", chosen); } catch (_) {}
-  writeLSConfig(chosen);
-
-  return chosen;
-}
-
-function sanitizeConfig(input) {
-  const out = { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", debug: false, recentLimit: 60, pinLimit: 12, imageContextMenu: true, hoverPreview: true };
-  if (input && typeof input === "object") {
-    // 先确定上限
-    let rlim = 60;
-    let plim = 12;
-    if (Number.isFinite(input.recentLimit)) {
-      rlim = Math.max(1, Math.min(999, Math.floor(input.recentLimit)));
-      out.recentLimit = rlim;
+  let current = sanitizeConfig(readConfigSyncIPC(DEFAULT_CONFIG) || DEFAULT_CONFIG);
+  if (!browserConfigImportTried) {
+    browserConfigImportTried = true;
+    const legacyBrowserConfig = readLSConfig();
+    if (!isMeaningfulConfig(current) && isMeaningfulConfig(legacyBrowserConfig)) {
+      current = sanitizeConfig(importBrowserConfigSyncIPC(legacyBrowserConfig) || current);
     }
-    if (Number.isFinite(input.pinLimit)) {
-      plim = Math.max(1, Math.min(99, Math.floor(input.pinLimit)));
-      out.pinLimit = plim;
-    }
-
-    if (typeof input.rootDir === "string") out.rootDir = input.rootDir;
-    if (Array.isArray(input.recent)) out.recent = input.recent.filter(p => typeof p === "string").slice(0, rlim);
-    if (Array.isArray(input.pinned)) {
-      const seen = new Set();
-      const arr = [];
-      for (const p of input.pinned) {
-        if (typeof p !== "string") continue;
-        const norm = p.replace(/\\/g, "/");
-        if (seen.has(norm)) continue; seen.add(norm); arr.push(norm);
-        if (arr.length >= plim) break;
-      }
-      out.pinned = arr;
-    }
-
-    if (typeof input.lastCategory === "string") out.lastCategory = input.lastCategory.slice(0, 128);
-    if (typeof input.hotkey === "string") out.hotkey = input.hotkey.slice(0, 64) || "Alt+E";
-    if (Number.isFinite(input.gridCols)) {
-      const n = Math.max(2, Math.min(12, Math.floor(input.gridCols)));
-      out.gridCols = n;
-    }
-    out.showFileName = !!input.showFileName;
-    if (typeof input.sendMode === 'string') {
-      const v = String(input.sendMode).toLowerCase();
-      out.sendMode = ["multi", "image", "native"].includes(v) ? v : "multi";
-    }
-    out.debug = !!input.debug;
-    out.imageContextMenu = typeof input.imageContextMenu === "boolean" ? input.imageContextMenu : true;
-    out.hoverPreview = typeof input.hoverPreview === "boolean" ? input.hoverPreview : true;
   }
-  return out;
+  configCache = current;
+  return cloneConfig(current);
 }
 
 function setConfig(newConfig) {
   try {
-    const current = getConfig();
-    const merged = { ...current };
-    if (newConfig && typeof newConfig === "object") {
-      for (const k of Object.keys(newConfig)) {
-        if (!CONFIG_KEYS.has(k)) continue;
-        merged[k] = newConfig[k];
-      }
-    }
-    const sanitized = sanitizeConfig(merged);
-    // 先写主进程（落盘），再写 LiteLoader，再写本地存储
-    writeConfigSyncIPC(sanitized);
-    try { LiteLoader.api.config.set("local_emotes", sanitized); } catch (_) {}
-    writeLSConfig(sanitized);
-    return true;
+    const current = configCache || sanitizeConfig(readConfigSyncIPC(DEFAULT_CONFIG) || DEFAULT_CONFIG);
+    const sanitized = mergeConfigPatch(current, newConfig);
+    const ok = writeConfigSyncIPC(sanitized);
+    if (ok) configCache = sanitized;
+    return ok;
   } catch (e) {
     return false;
   }

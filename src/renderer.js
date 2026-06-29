@@ -4355,45 +4355,39 @@ export const onSettingWindowCreated = (view) => {
           const updateMode = (m) => {
             const c = window.localEmote.getConfig();
             c.sendMode = m;
-            window.localEmote.setConfig(c);
-            try { dbg('settings: sendMode set to', m); } catch (_) {}
-            setActive(m);
+            const ok = window.localEmote.setConfig(c);
+            let latest = c;
+            try { latest = ok && window.localEmote.getConfig ? window.localEmote.getConfig() : c; } catch (_) {}
+            const mode = latest && latest.sendMode ? latest.sendMode : m;
+            try { dbg('settings: sendMode set to', mode); } catch (_) {}
+            setActive(mode);
           };
-          if (btnMulti) btnMulti.addEventListener('click', () => updateMode('multi'));
-          if (btnSingle) btnSingle.addEventListener('click', () => updateMode('image'));
-          if (btnNative) btnNative.addEventListener('click', () => updateMode('native'));
-          // 兜底：使用事件委托，保证在某些自定义组件内部阻止冒泡时依然能工作
           if (sendModeWrap) {
+            const modeFromEvent = (e) => {
+              try {
+                const ids = {
+                  'le-send-mode-multi': 'multi',
+                  'le-send-mode-single': 'image',
+                  'le-send-mode-native': 'native',
+                };
+                const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+                for (const n of path) {
+                  if (n && n.id && ids[n.id]) return ids[n.id];
+                }
+                const el = e.target && e.target.closest ? e.target.closest('#le-send-mode-multi, #le-send-mode-single, #le-send-mode-native') : null;
+                return el && ids[el.id] ? ids[el.id] : '';
+              } catch (_) {
+                return '';
+              }
+            };
             sendModeWrap.addEventListener(
               'click',
               (e) => {
-                try {
-                  const el = e.target && (e.target.closest ? e.target.closest('#le-send-mode-multi, #le-send-mode-single, #le-send-mode-native') : null);
-                  if (!el) return;
-                  if (el.id === 'le-send-mode-multi') updateMode('multi');
-                  else if (el.id === 'le-send-mode-single') updateMode('image');
-                  else if (el.id === 'le-send-mode-native') updateMode('native');
-                } catch (_) {}
+                const mode = modeFromEvent(e);
+                if (mode) updateMode(mode);
               },
               true
             );
-          }
-          // 终极兜底：在整个 settings 视图上捕获 click，通过 composedPath 穿透 Shadow DOM
-          if (view && view.addEventListener) {
-            view.addEventListener('click', (e) => {
-              try {
-                const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-                let el = null;
-                for (const n of path) {
-                  if (!n || !n.id) continue;
-                  if (n.id === 'le-send-mode-multi' || n.id === 'le-send-mode-single' || n.id === 'le-send-mode-native') { el = n; break; }
-                }
-                if (!el) return;
-                if (el.id === 'le-send-mode-multi') updateMode('multi');
-                else if (el.id === 'le-send-mode-single') updateMode('image');
-                else if (el.id === 'le-send-mode-native') updateMode('native');
-              } catch (_) {}
-            }, true);
           }
         })
         .catch(() => tryLoad(idx + 1));

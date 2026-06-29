@@ -2,15 +2,29 @@ const { app, dialog, ipcMain, clipboard, nativeImage, BrowserWindow } = require(
 const fs = require("fs");
 const fsp = require("fs").promises;
 const path = require("path");
+const {
+  cloneDefaultConfig,
+  resolveConfigPaths,
+  sanitizeConfig,
+  selectStartupConfig,
+} = require("./config-utils");
 
 const SLUG = "local_emotes";
 
-function getPluginDataDir() {
+function getPluginDataPath() {
   try {
     const p = LiteLoader?.plugins?.[SLUG]?.path?.data;
     if (p) return p;
   } catch (_) {}
-  return path.join(LiteLoader.path.profile, SLUG);
+  return "";
+}
+
+function getProfilePath() {
+  try {
+    return LiteLoader?.path?.profile || "";
+  } catch (_) {
+    return "";
+  }
 }
 
 // 新增：确保目录存在（之前缺失会导致引用错误，进而使 IPC 未注册）
@@ -18,10 +32,15 @@ function ensureDirSync(dir) {
   try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
 }
 
-const PLUGIN_DATA_DIR = getPluginDataDir();
-const EMOTE_DIR = path.join(PLUGIN_DATA_DIR, "emotes");
-const LOG_FILE = path.join(PLUGIN_DATA_DIR, "log.txt");
-const CONFIG_FILE = path.join(PLUGIN_DATA_DIR, "config.json");
+const CONFIG_PATHS = resolveConfigPaths({
+  pluginDataPath: getPluginDataPath(),
+  profilePath: getProfilePath(),
+  slug: SLUG,
+});
+const PLUGIN_DATA_DIR = CONFIG_PATHS.dataDir;
+const EMOTE_DIR = CONFIG_PATHS.emoteDir;
+const LOG_FILE = CONFIG_PATHS.logFile;
+const CONFIG_FILE = CONFIG_PATHS.configFile;
 
 // 新增：运行时 IPC 捕获状态与工具
 const CAPTURE_STATE = { enabled: false, up: [], down: [] };
@@ -157,22 +176,31 @@ function pushCap(dir, channel, args, where, winId) {
 }
 
 function defaultConfig() {
-  return { rootDir: "", recent: [], pinned: [], lastCategory: "", hotkey: "Alt+E", gridCols: 6, showFileName: false, sendMode: "multi", recentLimit: 60, pinLimit: 12, imageContextMenu: true, hoverPreview: true };
+  return cloneDefaultConfig();
+}
+function readJsonConfigSync(file) {
+  if (!file) return null;
+  try {
+    if (!fs.existsSync(file)) return null;
+    const txt = fs.readFileSync(file, "utf-8");
+    const obj = JSON.parse(txt);
+    return obj && typeof obj === "object" ? obj : null;
+  } catch (e) {
+    log("read config json error", file, e?.message || e);
+    return null;
+  }
 }
 function readConfigSync() {
   try {
-    const txt = fs.readFileSync(CONFIG_FILE, "utf-8");
-    const obj = JSON.parse(txt);
-    if (!obj || typeof obj !== "object") return defaultConfig();
-    // merge to ensure all keys exist
-    return Object.assign(defaultConfig(), obj);
+    return sanitizeConfig(readJsonConfigSync(CONFIG_FILE));
   } catch (_) {
     return defaultConfig();
   }
 }
 function writeConfigSync(obj) {
   try {
-    const merged = Object.assign(defaultConfig(), (obj && typeof obj === "object") ? obj : {});
+    ensureDirSync(PLUGIN_DATA_DIR);
+    const merged = sanitizeConfig(obj);
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
     return true;
   } catch (e) {
@@ -180,6 +208,45 @@ function writeConfigSync(obj) {
     return false;
   }
 }
+
+function initializeConfigSync() {
+  try {
+    ensureDirSync(PLUGIN_DATA_DIR);
+    ensureDirSync(EMOTE_DIR);
+    const official = readJsonConfigSync(CONFIG_FILE);
+    const legacy =
+      CONFIG_PATHS.legacyConfigFile && path.resolve(CONFIG_PATHS.legacyConfigFile) !== path.resolve(CONFIG_FILE)
+        ? readJsonConfigSync(CONFIG_PATHS.legacyConfigFile)
+        : null;
+    const selected = selectStartupConfig({ officialConfig: official, legacyConfig: legacy });
+    if (selected.shouldPersist || !official) {
+      writeConfigSync(selected.config);
+      if (selected.source !== "default") log("migrated config from", selected.source);
+    }
+  } catch (e) {
+    log("initialize config error", e?.message || e);
+  }
+}
+
+function importBrowserConfigSync(cfg) {
+  try {
+    const current = readConfigSync();
+    const selected = selectStartupConfig({ officialConfig: current, localStorageConfig: cfg });
+    if (selected.source === "localStorage" && selected.shouldPersist) {
+      writeConfigSync(selected.config);
+      log("imported config from localStorage");
+      return selected.config;
+    }
+    return current;
+  } catch (e) {
+    log("import browser config error", e?.message || e);
+    return readConfigSync();
+  }
+}
+
+ensureDirSync(PLUGIN_DATA_DIR);
+ensureDirSync(EMOTE_DIR);
+initializeConfigSync();
 
 // 同步配置 IPC，供渲染进程 preload 同步读取
 ipcMain.on("localEmote:getConfigSync", (event, def) => {
@@ -196,8 +263,13 @@ ipcMain.on("localEmote:setConfigSync", (event, cfg) => {
     event.returnValue = false;
   }
 });
-ensureDirSync(PLUGIN_DATA_DIR);
-ensureDirSync(EMOTE_DIR);
+ipcMain.on("localEmote:importBrowserConfigSync", (event, cfg) => {
+  try {
+    event.returnValue = importBrowserConfigSync(cfg);
+  } catch (_) {
+    event.returnValue = readConfigSync();
+  }
+});
 
 function log(...args) {
   const line = `[local_emotes] ${new Date().toISOString()} ${args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")}` + "\n";
