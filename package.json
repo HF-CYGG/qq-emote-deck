@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "lint": "eslint \"src/**/*.js\"",
-    "test": "node --test tests/config-utils.test.js",
+    "test": "node --test tests/*.test.js",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

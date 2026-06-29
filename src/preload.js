@@ -5,6 +5,10 @@ const {
   mergeConfigPatch,
   sanitizeConfig,
 } = require("./config-utils");
+const {
+  planSendEmote,
+  toSendResult,
+} = require("./send-engine");
 /* path module removed: provide string helpers instead */
 function basename(p) {
   try {
@@ -187,6 +191,31 @@ async function ipcCopyToCategory(src, category) {
 async function ipcOpenDataDir() {
   try { return await ipcRenderer.invoke("localEmote:openDataDir"); } catch (_) { return false; }
 }
+async function getLibraryIndex(refresh = false) {
+  try {
+    return await ipcRenderer.invoke(refresh ? "localEmote:refreshLibraryIndex" : "localEmote:getLibraryIndex");
+  } catch (_) {
+    return { rootDir: "", exists: false, hash: "", packs: [], images: [], tree: [] };
+  }
+}
+async function refreshLibraryIndex() {
+  return getLibraryIndex(true);
+}
+async function importFiles(packDir) {
+  try { return await ipcRenderer.invoke("localEmote:importFiles", packDir); } catch (_) { return { ok: false, imported: [] }; }
+}
+async function copyImageToPack(src, packDir) {
+  try { return await ipcRenderer.invoke("localEmote:copyImageToPack", src, packDir); } catch (_) { return { ok: false }; }
+}
+async function renamePack(packDir, title) {
+  try { return await ipcRenderer.invoke("localEmote:renamePack", packDir, title); } catch (_) { return { ok: false }; }
+}
+async function deleteEmote(filePath) {
+  try { return await ipcRenderer.invoke("localEmote:deleteEmote", filePath); } catch (_) { return { ok: false }; }
+}
+async function updatePackMeta(packDir, patch) {
+  try { return await ipcRenderer.invoke("localEmote:updatePackMeta", packDir, patch); } catch (_) { return { ok: false }; }
+}
 
 // 调用主进程：运行时 IPC 捕获开关与日志访问
 async function setCaptureEnabled(v) {
@@ -202,9 +231,20 @@ async function clearIpcLog() {
   try { return await ipcRenderer.invoke("localEmote:clearIpcLog"); } catch (_) { return false; }
 }
 
-// A safe stub for sendEmote; renderer handles DOM insertion/animation.
-async function sendEmote(_absPath) {
-  try { return await ipcRenderer.invoke("localEmote:send", _absPath); } catch (_) { return { ok: false }; }
+// Unified send fallback. Renderer may use QQNT native adapter first, then this clipboard path.
+async function sendEmote(absPath, options = {}) {
+  const cfg = getConfig();
+  const plan = planSendEmote({
+    mode: options.mode || cfg.sendMode,
+    capabilities: options.capabilities || {},
+    filePath: absPath,
+  });
+  try {
+    const res = await ipcRenderer.invoke("localEmote:send", absPath);
+    return toSendResult({ ok: !!(res && res.ok), plan, reason: res?.reason || "" });
+  } catch (e) {
+    return toSendResult({ ok: false, plan, reason: e?.message || "send_failed" });
+  }
 }
 // ===== End of missing wrappers =====
 function walkDirOnce(dir) {
@@ -266,12 +306,22 @@ async function listEmotes() {
 // 新增：列出指定根目录下包含图片的子文件夹作为表情包
 async function listPacksInDir(root) {
   try {
-    const arr = await ipcRenderer.invoke("localEmote:listPacksInDir", root);
+    const cfg = getConfig();
+    let arr = [];
+    if (!root || (cfg.rootDir && root === cfg.rootDir)) {
+      const index = await getLibraryIndex(false);
+      arr = index.packs || [];
+    } else {
+      arr = await ipcRenderer.invoke("localEmote:listPacksInDir", root);
+    }
     return (Array.isArray(arr) ? arr : []).map((p) => ({
       name: p?.name || "",
       dir: p?.dir || "",
       first: p?.first || "",
-      firstUrl: p?.first ? toLocalUrl(p.first) : "",
+      firstUrl: p?.first ? toLocalUrl(p.first) : (p?.coverPath ? toLocalUrl(p.coverPath) : ""),
+      coverPath: p?.coverPath || p?.first || "",
+      count: p?.count || 0,
+      relativeDir: p?.relativeDir || "",
     }));
   } catch (_) { return []; }
 }
@@ -279,6 +329,16 @@ async function listPacksInDir(root) {
 // 新增：列出某个目录内的所有图片（用于点选某个包后渲染网格）
 async function listImagesInDir(dir) {
   try {
+    const index = await getLibraryIndex(false);
+    const pack = Array.isArray(index.packs) ? index.packs.find((p) => p.dir === dir || p.path === dir) : null;
+    if (pack && Array.isArray(pack.images)) {
+      return pack.images.map((item) => ({
+        name: item.name || basename(item.path),
+        path: item.path || item.absPath,
+        absPath: item.path || item.absPath,
+        url: item.url || toLocalUrl(item.path || item.absPath),
+      }));
+    }
     const arr = await ipcRenderer.invoke("localEmote:listBrowseDir", dir);
     return (Array.isArray(arr) ? arr : []).map((i) => {
       const p = i?.path || "";
@@ -305,6 +365,13 @@ contextBridge.exposeInMainWorld("localEmote", {
   // 新增 API：扫描根目录的表情包子文件夹与列目录图片
   listPacksInDir,
   listImagesInDir,
+  getLibraryIndex,
+  refreshLibraryIndex,
+  importFiles,
+  copyImageToPack,
+  renamePack,
+  deleteEmote,
+  updatePackMeta,
   // 分类与导入（插件数据目录内的分类存储）
   listCategories: ipcListCategories,
   addCategory: ipcAddCategory,

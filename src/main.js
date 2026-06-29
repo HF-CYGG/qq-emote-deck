@@ -8,6 +8,11 @@ const {
   sanitizeConfig,
   selectStartupConfig,
 } = require("./config-utils");
+const {
+  buildLibraryIndex,
+  cleanConfigRefs,
+  resolveInsideRoot,
+} = require("./library-index");
 
 const SLUG = "local_emotes";
 
@@ -41,6 +46,12 @@ const PLUGIN_DATA_DIR = CONFIG_PATHS.dataDir;
 const EMOTE_DIR = CONFIG_PATHS.emoteDir;
 const LOG_FILE = CONFIG_PATHS.logFile;
 const CONFIG_FILE = CONFIG_PATHS.configFile;
+let libraryIndexCache = null;
+let libraryIndexRoot = "";
+let libraryIndexHash = "";
+let libraryWatcher = null;
+let libraryWatcherRoot = "";
+let libraryRefreshTimer = null;
 
 // 新增：运行时 IPC 捕获状态与工具
 const CAPTURE_STATE = { enabled: false, up: [], down: [] };
@@ -241,6 +252,158 @@ function importBrowserConfigSync(cfg) {
   } catch (e) {
     log("import browser config error", e?.message || e);
     return readConfigSync();
+  }
+}
+
+function sameStringArray(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((item, index) => item === b[index]);
+}
+
+function scheduleLibraryRefresh() {
+  clearTimeout(libraryRefreshTimer);
+  libraryRefreshTimer = setTimeout(() => {
+    refreshLibraryIndex().catch((e) => log("refresh library index by watcher error", e?.message || e));
+  }, 250);
+}
+
+function ensureLibraryWatcher(rootDir) {
+  const rootAbs = path.resolve(rootDir || "");
+  if (!rootDir || libraryWatcherRoot === rootAbs) return;
+  try {
+    if (libraryWatcher) libraryWatcher.close();
+  } catch (_) {}
+  libraryWatcher = null;
+  libraryWatcherRoot = "";
+  try {
+    libraryWatcher = fs.watch(rootAbs, { recursive: true }, () => scheduleLibraryRefresh());
+    libraryWatcherRoot = rootAbs;
+  } catch (e) {
+    log("watch library root skipped", rootAbs, e?.message || e);
+  }
+}
+
+async function getLibraryIndex(force = false, rootOverride = "") {
+  const cfg = readConfigSync();
+  const rootDir = rootOverride || cfg.rootDir || "";
+  if (!rootDir) {
+    return { rootDir: "", exists: false, hash: "", packs: [], images: [], tree: [] };
+  }
+  const rootAbs = path.resolve(rootDir);
+  if (!force && libraryIndexCache && libraryIndexRoot === rootAbs) return libraryIndexCache;
+  const index = await buildLibraryIndex(rootAbs);
+  libraryIndexCache = index;
+  libraryIndexRoot = rootAbs;
+  libraryIndexHash = index.hash;
+  if (!rootOverride && index.exists) ensureLibraryWatcher(rootAbs);
+  if (!rootOverride && index.exists) {
+    const cleaned = cleanConfigRefs(cfg, index);
+    if (
+      !sameStringArray(cleaned.recent, cfg.recent) ||
+      !sameStringArray(cleaned.pinned, cfg.pinned) ||
+      cleaned.lastCategory !== cfg.lastCategory
+    ) {
+      writeConfigSync(cleaned);
+    }
+  }
+  return index;
+}
+
+async function refreshLibraryIndex() {
+  return getLibraryIndex(true);
+}
+
+async function importFiles(packDir) {
+  try {
+    const cfg = readConfigSync();
+    if (!cfg.rootDir) return { ok: false, reason: "root_dir_missing", imported: [] };
+    const targetDir = resolveInsideRoot(cfg.rootDir, packDir || cfg.rootDir);
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: "选择要导入的表情",
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "apng"] }],
+    });
+    if (canceled) return { ok: true, canceled: true, imported: [] };
+    const imported = [];
+    for (const src of filePaths || []) {
+      const res = await copyToCategory(src, "__dir__|" + targetDir);
+      if (res && res.ok) imported.push(res);
+    }
+    await refreshLibraryIndex();
+    return { ok: true, canceled: false, imported };
+  } catch (e) {
+    log("importFiles error", e?.message || e);
+    return { ok: false, reason: e?.message || "error", imported: [] };
+  }
+}
+
+async function copyImageToPack(src, packDir) {
+  try {
+    const cfg = readConfigSync();
+    if (!cfg.rootDir) return { ok: false, reason: "root_dir_missing" };
+    const targetDir = resolveInsideRoot(cfg.rootDir, packDir || cfg.rootDir);
+    const res = await copyToCategory(src, "__dir__|" + targetDir);
+    if (res && res.ok) await refreshLibraryIndex();
+    return res;
+  } catch (e) {
+    log("copyImageToPack error", src, packDir, e?.message || e);
+    return { ok: false, reason: e?.message || "error" };
+  }
+}
+
+async function readPackMeta(packDir) {
+  try {
+    const file = path.join(packDir, "sticker.json");
+    const raw = await fsp.readFile(file, "utf8");
+    const meta = JSON.parse(raw);
+    return meta && typeof meta === "object" ? meta : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+async function writePackMeta(packDir, meta) {
+  await fsp.mkdir(packDir, { recursive: true });
+  await fsp.writeFile(path.join(packDir, "sticker.json"), JSON.stringify(meta, null, 2), "utf8");
+}
+
+async function updatePackMeta(packDir, patch) {
+  try {
+    const cfg = readConfigSync();
+    if (!cfg.rootDir) return { ok: false, reason: "root_dir_missing" };
+    const targetDir = resolveInsideRoot(cfg.rootDir, packDir);
+    const meta = await readPackMeta(targetDir);
+    if (patch && typeof patch.title === "string") meta.title = safeName(patch.title);
+    if (patch && typeof patch.icon === "string" && patch.icon) {
+      const iconPath = resolveInsideRoot(targetDir, path.resolve(targetDir, patch.icon));
+      meta.icon = path.basename(iconPath);
+    }
+    await writePackMeta(targetDir, meta);
+    await refreshLibraryIndex();
+    return { ok: true, meta };
+  } catch (e) {
+    log("updatePackMeta error", packDir, e?.message || e);
+    return { ok: false, reason: e?.message || "error" };
+  }
+}
+
+async function renamePack(packDir, title) {
+  return updatePackMeta(packDir, { title });
+}
+
+async function deleteEmote(filePath) {
+  try {
+    const cfg = readConfigSync();
+    if (!cfg.rootDir) return { ok: false, reason: "root_dir_missing" };
+    const target = resolveInsideRoot(cfg.rootDir, filePath);
+    const stat = await fsp.stat(target).catch(() => null);
+    if (!stat || !stat.isFile()) return { ok: false, reason: "file_not_found" };
+    await fsp.rm(target, { force: true });
+    await refreshLibraryIndex();
+    return { ok: true };
+  } catch (e) {
+    log("deleteEmote error", filePath, e?.message || e);
+    return { ok: false, reason: e?.message || "error" };
   }
 }
 
@@ -519,38 +682,18 @@ async function copyToCategory(src, category) {
 // 新增：扫描指定根目录下的所有包含图片的子文件夹，返回按名称排序的分组及首张预览图
 async function listPacksInDir(rootDir) {
   try {
-    const st = await fsp.stat(rootDir).catch(() => null);
-    if (!st || !st.isDirectory()) return [];
-
-    const entries = await fsp.readdir(rootDir, { withFileTypes: true });
-
-    // 1) 根目录下直接包含的图片，作为一个独立分组：本地表情
-    const rootImgs = entries
-      .filter(e => e.isFile() && ALLOWED_EXT.has(path.extname(e.name).toLowerCase()))
-      .map(e => e.name)
-      .sort((a, b) => a.localeCompare(b));
-    const rootPack = rootImgs.length > 0
-      ? { name: "本地表情", dir: rootDir, first: path.join(rootDir, rootImgs[0]) }
-      : null;
-
-    // 2) 子文件夹各自作为表情包，名称为子文件夹名
-    const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
-    const subPacks = [];
-    for (const name of dirs) {
-      const dir = path.join(rootDir, name);
-      const files = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
-      const imgs = files
-        .filter(e => e.isFile() && ALLOWED_EXT.has(path.extname(e.name).toLowerCase()))
-        .map(e => e.name)
-        .sort((a, b) => a.localeCompare(b));
-      if (imgs.length > 0) {
-        subPacks.push({ name, dir, first: path.join(dir, imgs[0]) });
-      }
-    }
-    subPacks.sort((a, b) => a.name.localeCompare(b.name));
-
-    // 根目录分组优先置前，其后为按名称排序的子包
-    return rootPack ? [rootPack, ...subPacks] : subPacks;
+    const index = await getLibraryIndex(false, rootDir);
+    return index.packs.map((pack) => ({
+      name: pack.name,
+      dir: pack.dir,
+      path: pack.dir,
+      first: pack.coverPath || pack.images?.[0]?.path || "",
+      firstPath: pack.coverPath || pack.images?.[0]?.path || "",
+      coverPath: pack.coverPath || "",
+      iconPath: pack.iconPath || "",
+      count: pack.count || 0,
+      relativeDir: pack.relativeDir || "",
+    }));
   } catch (e) {
     log("listPacksInDir error", rootDir, e?.message || e);
     return [];
@@ -575,6 +718,13 @@ ipcMain.handle("localEmote:listEmojis", async (_e, cat) => listEmojis(cat));
 ipcMain.handle("localEmote:importEmojis", async (_e, cat) => importEmojis(cat));
 ipcMain.handle("localEmote:removeEmoji", async (_e, cat, file) => removeEmoji(cat, file));
 ipcMain.handle("localEmote:copyToCategory", async (_e, src, category) => copyToCategory(src, category));
+ipcMain.handle("localEmote:getLibraryIndex", async () => getLibraryIndex(false));
+ipcMain.handle("localEmote:refreshLibraryIndex", async () => refreshLibraryIndex());
+ipcMain.handle("localEmote:importFiles", async (_e, packDir) => importFiles(packDir));
+ipcMain.handle("localEmote:copyImageToPack", async (_e, src, packDir) => copyImageToPack(src, packDir));
+ipcMain.handle("localEmote:renamePack", async (_e, packDir, title) => renamePack(packDir, title));
+ipcMain.handle("localEmote:deleteEmote", async (_e, filePath) => deleteEmote(filePath));
+ipcMain.handle("localEmote:updatePackMeta", async (_e, packDir, patch) => updatePackMeta(packDir, patch));
 ipcMain.handle("localEmote:openDataDir", async () => {
   try {
     LiteLoader.api.openPath(PLUGIN_DATA_DIR);

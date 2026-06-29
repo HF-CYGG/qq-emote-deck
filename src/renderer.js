@@ -1,15 +1,26 @@
+import * as qqntAdapter from "./renderer-qqnt-adapter.js";
+
 // 设置页与渲染进程入口
+function isDebugConfigEnabled() {
+  try {
+    const cfg = window.localEmote && window.localEmote.getConfig ? window.localEmote.getConfig() : null;
+    return !!(cfg && cfg.debug);
+  } catch (_) {
+    return false;
+  }
+}
 
 // --- LE main-world bridge injection (works under contextIsolation) ---
 try {
   (function installLEMainWorldBridge() {
     if (window.__LE_BRIDGE_ATTEMPTED) return; // avoid duplicate
     window.__LE_BRIDGE_ATTEMPTED = true;
+    const debugBridge = isDebugConfigEnabled();
     // 1) Inject a script into MAIN WORLD to expose proxy functions
     try {
       const s = document.createElement('script');
       s.id = 'le-main-bridge';
-      s.textContent = `(() => {\n  try {\n    if (window.__LE_BRIDGE_INSTALLED) return;\n    window.__LE_BRIDGE_INSTALLED = true;\n    try {\n      if (!window.__le_sel_patch) {\n        window.__le_sel_patch = true;\n        const __le_findEd = () => {\n          try {\n            const sels = ['[contenteditable=\"true\"]','div[role=\"textbox\"]','div[contenteditable=\"plaintext-only\"]','[contenteditable]','textarea','input[type=\"text\"]'];\n            for (const s of sels) {\n              const list = document.querySelectorAll(s);\n              for (const el of list) {\n                if (!el || el.offsetParent === null) continue;\n                if (el.closest('.two-col-layout__aside, .contact-top-bar, .main-search, .recent-contact, .lite-tools-vue-component .search')) continue;\n                return el;\n              }\n            }\n          } catch (_) {}\n          return null;\n        };\n        const __le_orig = Selection.prototype.getRangeAt;\n        Selection.prototype.getRangeAt = function(i) {\n          try {\n            if (this.rangeCount === 0) {\n              const ed = __le_findEd();\n              const r = document.createRange();\n              if (ed) r.selectNodeContents(ed); else r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              try { this.addRange(r); } catch (_) {}\n            }\n            return __le_orig.call(this, i || 0);\n          } catch (e) {\n            try {\n              const r = document.createRange();\n              r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              return r;\n            } catch (_) {}\n            throw e;\n          }\n        };\n      }\n    } catch (e) {}\n    const pending = new Map();\n    window.addEventListener('message', (e) => {\n      const d = e.data;\n      if (!d || d.__from !== 'le-isolated' || !d.id) return;\n      const p = pending.get(d.id);\n      if (!p) return;\n      pending.delete(d.id);\n      if (d.error) {\n        const err = new Error(d.error.message || 'LE bridge error');\n        err.name = d.error.name || err.name;\n        err.stack = d.error.stack || err.stack;\n        p.reject(err);\n      } else {\n        p.resolve(d.result);\n      }\n    }, false);\n    function send(type, payload) {\n      const id = Math.random().toString(36).slice(2);\n      return new Promise((resolve, reject) => {\n        pending.set(id, { resolve, reject });\n        window.postMessage({ __to: 'le-isolated', id, type, payload }, '*');\n      });\n    }\n    // Expose proxies in MAIN WORLD\n    window.le_sendMessage = function(peer, messages, opts) {\n      return send('sendMessage', { peer, messages, opts });\n    };\n    window.le_convertMessage = function(messages) {\n      return send('convertMessage', { messages });\n    };\n    window.derivePeer = function() {\n      return send('derivePeer', {});\n    };\n  } catch (e) {\n    console.error('[local_emotes] main-world bridge install failed', e);\n  }\n})();`;
+      s.textContent = `(() => {\n  try {\n    if (window.__LE_BRIDGE_INSTALLED) return;\n    window.__LE_BRIDGE_INSTALLED = true;\n    try {\n      if (${debugBridge ? "true" : "false"} && !window.__le_sel_patch) {\n        window.__le_sel_patch = true;\n        const __le_findEd = () => {\n          try {\n            const sels = ['[contenteditable=\"true\"]','div[role=\"textbox\"]','div[contenteditable=\"plaintext-only\"]','[contenteditable]','textarea','input[type=\"text\"]'];\n            for (const s of sels) {\n              const list = document.querySelectorAll(s);\n              for (const el of list) {\n                if (!el || el.offsetParent === null) continue;\n                if (el.closest('.two-col-layout__aside, .contact-top-bar, .main-search, .recent-contact, .lite-tools-vue-component .search')) continue;\n                return el;\n              }\n            }\n          } catch (_) {}\n          return null;\n        };\n        const __le_orig = Selection.prototype.getRangeAt;\n        Selection.prototype.getRangeAt = function(i) {\n          try {\n            if (this.rangeCount === 0) {\n              const ed = __le_findEd();\n              const r = document.createRange();\n              if (ed) r.selectNodeContents(ed); else r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              try { this.addRange(r); } catch (_) {}\n            }\n            return __le_orig.call(this, i || 0);\n          } catch (e) {\n            try {\n              const r = document.createRange();\n              r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              return r;\n            } catch (_) {}\n            throw e;\n          }\n        };\n      }\n    } catch (e) {}\n    const pending = new Map();\n    window.addEventListener('message', (e) => {\n      const d = e.data;\n      if (!d || d.__from !== 'le-isolated' || !d.id) return;\n      const p = pending.get(d.id);\n      if (!p) return;\n      pending.delete(d.id);\n      if (d.error) {\n        const err = new Error(d.error.message || 'LE bridge error');\n        err.name = d.error.name || err.name;\n        err.stack = d.error.stack || err.stack;\n        p.reject(err);\n      } else {\n        p.resolve(d.result);\n      }\n    }, false);\n    function send(type, payload) {\n      const id = Math.random().toString(36).slice(2);\n      return new Promise((resolve, reject) => {\n        pending.set(id, { resolve, reject });\n        window.postMessage({ __to: 'le-isolated', id, type, payload }, '*');\n      });\n    }\n    // Expose proxies in MAIN WORLD\n    window.le_sendMessage = function(peer, messages, opts) {\n      return send('sendMessage', { peer, messages, opts });\n    };\n    window.le_convertMessage = function(messages) {\n      return send('convertMessage', { messages });\n    };\n    window.derivePeer = function() {\n      return send('derivePeer', {});\n    };\n  } catch (e) {\n    console.error('[local_emotes] main-world bridge install failed', e);\n  }\n})();`;
       document.documentElement.appendChild(s);
       s.remove();
     } catch (e) {
@@ -52,6 +63,7 @@ try {
 try {
   (function installLEMainWorldService() {
     try {
+      const serviceDebug = isDebugConfigEnabled();
       const s2 = document.createElement('script');
       s2.id = 'le-main-service';
       s2.textContent = `(() => {
@@ -233,7 +245,7 @@ try {
             } catch (_) {}
           };
           try {
-            if (!window.__le_curAioWatchTimer) {
+            if (${serviceDebug ? "true" : "false"} && !window.__le_curAioWatchTimer) {
               __le_initCurAioWatch();
               window.__le_curAioWatchTimer = setInterval(__le_initCurAioWatch, 500);
             }
@@ -501,7 +513,7 @@ try {
             } catch (_) {}
           };
           try {
-            if (!window.__le_peer_cache_timer) {
+            if (${serviceDebug ? "true" : "false"} && !window.__le_peer_cache_timer) {
               __le_refreshPeerCache();
               window.__le_peer_cache_timer = setInterval(__le_refreshPeerCache, 1200);
             }
@@ -837,6 +849,21 @@ function injectLEStylesOnce() {
   /* 滚动条 */
   #local-emote-overlay .le-grid::-webkit-scrollbar { width: 8px; height: 8px; }
   #local-emote-overlay .le-grid::-webkit-scrollbar-thumb { background-color: rgba(0,0,0,.25); border-radius: 8px; }
+  #local-emote-overlay .le-search-row {
+    display: flex; align-items: center; gap: 8px; padding: 10px 10px 0;
+  }
+  #local-emote-overlay .le-search {
+    width: 100%; height: 30px;
+  }
+  #local-emote-overlay .le-empty {
+    grid-column: 1 / -1;
+    padding: 18px 12px;
+    color: var(--le-muted);
+    text-align: center;
+    border: 1px dashed var(--le-border);
+    border-radius: 10px;
+    background: var(--le-input-bg);
+  }
   @media (prefers-color-scheme: dark) {
     #local-emote-overlay .le-grid::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,.25); }
   }
@@ -2052,6 +2079,7 @@ function tryInsertImageToEditor(absPath) {
     return insertImageAtCursor(editor, url);
   } catch (_) { return false; }
 }
+try { window.__localEmoteInsertImage = tryInsertImageToEditor; } catch (_) {}
 function dbg(...args) {
   try {
     const cfg = window.localEmote && window.localEmote.getConfig ? window.localEmote.getConfig() : null;
@@ -2627,7 +2655,7 @@ function scanStoreForMsgElements(maxResults = 8) {
   }
 }
 // 暴露给控制台
-try { window.scanStoreForMsgElements = scanStoreForMsgElements; } catch (_) {}
+try { if (isDebugConfigEnabled()) window.scanStoreForMsgElements = scanStoreForMsgElements; } catch (_) {}
 
 // === 辅助函数结束 ===
 
@@ -2664,6 +2692,14 @@ function buildOverlay() {
   // 可滚动区域（包含“历史表情”和“本地表情”两个网格）
   const scroll = document.createElement('div');
   scroll.className = 'le-scroll';
+  const searchRow = document.createElement('div');
+  searchRow.className = 'le-search-row';
+  const searchInput = document.createElement('input');
+  searchInput.className = 'le-input le-search';
+  searchInput.type = 'search';
+  searchInput.placeholder = '搜索表情、文件名或目录';
+  searchInput.spellcheck = false;
+  searchRow.appendChild(searchInput);
 
   // 历史表情 Section
   const titleRecent = document.createElement('div');
@@ -2704,6 +2740,7 @@ function buildOverlay() {
   scroll.appendChild(recentGrid);
   scroll.appendChild(titleMain);
   scroll.appendChild(grid);
+  content.appendChild(searchRow);
   content.appendChild(scroll);
   content.appendChild(packsBar);
   card.appendChild(content);
@@ -2711,6 +2748,7 @@ function buildOverlay() {
 
   // 状态
   let currentList = [];
+  let searchQuery = "";
   let activeIndex = -1;
   let selectedCat = '__recent__';
   let categoriesCache = [];
@@ -2832,6 +2870,28 @@ function buildOverlay() {
     } catch (_) { return null; }
   }
 
+  function filterItems(items) {
+    const query = String(searchQuery || '').trim().toLowerCase();
+    if (!query) return Array.isArray(items) ? items : [];
+    return (Array.isArray(items) ? items : []).filter((it) => {
+      const text = [
+        it && it.name,
+        it && it.baseName,
+        it && it.path,
+        it && it.absPath,
+        it && it.relativePath,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return text.includes(query);
+    });
+  }
+
+  function appendEmptyState(target, text) {
+    const empty = document.createElement('div');
+    empty.className = 'le-empty';
+    empty.textContent = text;
+    target.appendChild(empty);
+  }
+
   function getCards() { return Array.from(grid.querySelectorAll('.le-card')); }
   function getCols() {
     const cs = getComputedStyle(grid).gridTemplateColumns || '';
@@ -2865,6 +2925,12 @@ function buildOverlay() {
     updateActiveClasses();
     try { cards[activeIndex].scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
   }
+  searchInput.addEventListener('input', () => {
+    searchQuery = searchInput.value || "";
+    activeIndex = -1;
+    renderRecentGrid();
+    renderGrid();
+  });
 
   // 新增：渲染“历史表情”
   async function renderRecentGrid() {
@@ -2876,6 +2942,10 @@ function buildOverlay() {
       recentGrid.innerHTML = '';
       let all = [];
       try { all = await window.localEmote.listRecent(); dbg('renderRecentGrid: got', all.length, 'items'); } catch (e) { dbg('renderRecentGrid: listRecent error', e && e.message); all = []; }
+      all = filterItems(all);
+      if (all.length === 0) {
+        appendEmptyState(recentGrid, searchQuery ? '最近使用中没有匹配的表情' : '暂无最近使用');
+      }
       for (let idx = 0; idx < all.length; idx++) {
         const it = all[idx];
         const card = document.createElement('div');
@@ -2927,7 +2997,7 @@ function buildOverlay() {
 
           // 尝试获取环境
           let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-          let peer = await derivePeerAsync();
+          let peer = await qqntAdapter.getCurrentPeer();
           try { ensureSelectionAtEditorEnd(getEditorEl()); } catch (_) {}
 
           // 判定是否必须走 Native：配置为native、按住Alt、或者文件是GIF
@@ -2941,7 +3011,7 @@ function buildOverlay() {
               while (Date.now() < end) {
                 await new Promise(r => setTimeout(r, 100));
                 lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-                peer = await derivePeerAsync();
+                peer = await qqntAdapter.getCurrentPeer();
                 if ((lt || typeof window.leMainRequest === 'function') && peer) break;
               }
             } catch (_) {}
@@ -2964,7 +3034,7 @@ function buildOverlay() {
             try {
               // Standard/Native mode: picSubType=1, asFace=true
               const picSubType = 1;
-              await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: true }]);
+              await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: true });
               sentOk = true;
               dbg('recent click: native send ok');
               try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -2980,7 +3050,7 @@ function buildOverlay() {
             try {
               // Image mode: picSubType=0, asFace=false
               const picSubType = 0;
-              await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: false }]);
+              await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: false });
               sentOk = true;
               dbg('recent click: image native send ok');
               try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -3101,7 +3171,10 @@ function buildOverlay() {
       } else {
         try { all = await window.localEmote.listEmojis(cat); dbg('renderGrid: category', cat, 'items', all.length); } catch (e) { dbg('renderGrid: listEmojis error', e && e.message); all = []; }
       }
-      currentList = all;
+      currentList = filterItems(all);
+      if (currentList.length === 0) {
+        appendEmptyState(grid, searchQuery ? '当前表情包中没有匹配结果' : '当前目录没有可用图片，请导入或选择包含图片的目录');
+      }
       for (let idx = 0; idx < currentList.length; idx++) {
         const it = currentList[idx];
         const card = document.createElement('div');
@@ -3140,7 +3213,7 @@ function buildOverlay() {
         
         // 尝试获取环境
         let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-        let peer = await derivePeerAsync();
+        let peer = await qqntAdapter.getCurrentPeer();
 
         // 判定是否必须走 Native
         const needNative = (sendMode === 'native' || (ev && ev.altKey) || isGif);
@@ -3153,7 +3226,7 @@ function buildOverlay() {
             while (Date.now() < end) {
               await new Promise(r => setTimeout(r, 100));
               lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-              peer = await derivePeerAsync();
+              peer = await qqntAdapter.getCurrentPeer();
               if ((lt || typeof window.leMainRequest === 'function') && peer) break;
             }
           } catch (_) {}
@@ -3176,7 +3249,7 @@ function buildOverlay() {
           try {
             // Standard/Native mode: picSubType=1 (local file), asFace=true
             const picSubType = 1;
-            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: true }]);
+            await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: true });
             sentOk = true;
             dbg('grid click: native send ok');
             try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -3192,7 +3265,7 @@ function buildOverlay() {
           try {
             // Image mode: picSubType=0 (local file), asFace=false
             const picSubType = 0;
-            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: false }]);
+            await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: false });
             sentOk = true;
             dbg('grid click: image native send ok');
             try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -4155,6 +4228,9 @@ export const onSettingWindowCreated = (view) => {
           const pinLimitApply = view.querySelector('.local_emotes .le-pin-limit-apply');
           const versionEl = view.querySelector('#le-settings-version');
           const openDataDirBtn = view.querySelector('#le-open-data-dir');
+          const diagnosticsEl = view.querySelector('#le-diagnostics');
+          const refreshLibraryBtn = view.querySelector('#le-refresh-library');
+          const refreshDiagnosticsBtn = view.querySelector('#le-refresh-diagnostics');
           const showNameSwitch = view.querySelector('#le-show-filename');
           const debugSwitch = view.querySelector('#le-debug');
           const imageContextSwitch = view.querySelector('#le-image-contextmenu');
@@ -4163,6 +4239,26 @@ export const onSettingWindowCreated = (view) => {
           if (versionEl) {
             try { versionEl.textContent = (LiteLoader.plugins?.["local_emotes"]?.manifest?.version) || ''; } catch (_) {}
           }
+          const renderDiagnostics = async (refresh = false) => {
+            if (!diagnosticsEl) return;
+            try {
+              const cfgNow = window.localEmote.getConfig();
+              const index = window.localEmote.getLibraryIndex ? await window.localEmote.getLibraryIndex(refresh) : null;
+              const caps = qqntAdapter.probeRuntimeCapabilities();
+              const parts = [
+                `目录：${cfgNow.rootDir || '未选择'}`,
+                `索引：${index?.packs?.length || 0} 个表情包 / ${index?.images?.length || 0} 张图片`,
+                `Hash：${index?.hash || '-'}`,
+                `发送模式：${cfgNow.sendMode}`,
+                `Adapter：nativeCall=${caps.nativeCall ? 'Y' : 'N'}，peer=${caps.peer ? 'Y' : 'N'}，image=${caps.imageMessage ? 'Y' : 'N'}，marketFace=${caps.marketFace ? 'Y' : 'N'}`,
+                `调试：${cfgNow.debug ? '开启' : '关闭'}`,
+              ];
+              diagnosticsEl.textContent = parts.join('；');
+            } catch (e) {
+              diagnosticsEl.textContent = '诊断刷新失败：' + (e?.message || e);
+            }
+          };
+          renderDiagnostics(false);
           if (dirInput) dirInput.value = cfg.rootDir || '未选择目录';
           // 已移除快速发送设置开关
           if (showNameSwitch) {
@@ -4230,6 +4326,14 @@ export const onSettingWindowCreated = (view) => {
           // 打开数据目录（两处按钮）
           if (btnOpenData) btnOpenData.addEventListener('click', () => { try { window.localEmote.openDataDir(); } catch (_) {} });
           if (openDataDirBtn) openDataDirBtn.addEventListener('click', () => { try { window.localEmote.openDataDir(); } catch (_) {} });
+          if (refreshLibraryBtn) refreshLibraryBtn.addEventListener('click', async () => {
+            try {
+              await window.localEmote.refreshLibraryIndex?.();
+              await renderDiagnostics(true);
+              await overlayInstance?.refresh?.();
+            } catch (_) {}
+          });
+          if (refreshDiagnosticsBtn) refreshDiagnosticsBtn.addEventListener('click', () => { renderDiagnostics(false); });
 
           // 热键设置
           if (hotkeyInput) {
