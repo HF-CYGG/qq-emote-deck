@@ -3641,7 +3641,7 @@ const tryInject = () => {
   dbg('tryInject: result', injected);
 };
 
-const leContextMenuState = { lastImagePath: "", lastTs: 0 };
+const leContextMenuState = { lastImageSource: "", lastTs: 0 };
 const leSubMenuTimers = new Map();
 
 function leEnsureContextMenuStyle() {
@@ -3688,7 +3688,7 @@ function leBuildFolderTree(flatList) {
   const map = new Map();
   const sortedList = [...flatList].sort((a, b) => String(a.path || "").localeCompare(String(b.path || ""), "en", { sensitivity: "base" }));
   const commonPrefix = leFindCommonPrefix(sortedList.map((item) => item.path));
-  const prefixLength = commonPrefix ? commonPrefix.length + 1 : 0;
+  const prefixLength = sortedList.length > 1 && commonPrefix ? commonPrefix.length + 1 : 0;
   sortedList.forEach((item) => {
     const adjustedPath = String(item.path || "").substring(prefixLength);
     map.set(adjustedPath, { name: item.name, path: item.path, adjustedPath, children: [] });
@@ -3959,7 +3959,7 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
       const subMenuIconEl = `<div class="q-context-menu-item__icon icon_next lite-tools-context-next-icon"><i class="q-icon"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.6953 3L10.7993 8.10522L5.6953 13.2104L5 12.5161L9.4098 8.10522L5 3.69439L5.6953 3Z"></path></svg></i></div>`;
       contextItem.insertAdjacentHTML("beforeend", subMenuIconEl);
     }
-    const tree = leBuildFolderTree(subMenuList);
+    const tree = subMenuList.some((item) => Array.isArray(item?.children)) ? subMenuList : leBuildFolderTree(subMenuList);
     leCreateNestedSubMenu(contextItem, tree, callback, 0);
   } else if (typeof callback === "function") {
     // No submenu, always click
@@ -4050,6 +4050,126 @@ function leGetImagePathFromSrc(src) {
   return src;
 }
 
+function leContextReasonText(reason) {
+  const map = {
+    root_dir_missing: "请先在设置页选择本地表情目录",
+    target_outside_root: "目标目录不在本地表情目录内",
+    source_missing: "找不到图片文件",
+    unsupported_source: "当前图片来源不支持保存",
+    fetch_failed: "图片读取失败",
+    bad_size: "图片为空或超过 20MB",
+    bad_magic: "不是有效图片文件",
+    bad_ext: "不支持的图片格式",
+    write_failed: "写入文件失败",
+  };
+  return map[reason] || reason || "未知错误";
+}
+
+function leNormalizeContextSource(source) {
+  try {
+    if (window.localEmote?.normalizeContextImageSource) {
+      return window.localEmote.normalizeContextImageSource(source);
+    }
+  } catch (_) {}
+  const p = leGetImagePathFromSrc(source);
+  if (p) return { kind: "file", source: p, fileName: p.split(/[\\/]/).pop() || "", mime: "" };
+  return { kind: "unsupported", source, reason: "unsupported_source" };
+}
+
+function leExtractCssUrl(value) {
+  const raw = String(value || "");
+  const match = raw.match(/url\((['"]?)(.*?)\1\)/i);
+  return match ? match[2] : "";
+}
+
+function leCollectImageCandidates(el) {
+  const out = [];
+  if (!el || el.nodeType !== 1) return out;
+  const push = (value) => { if (value && typeof value === "string") out.push(value); };
+  if (el.tagName === "IMG") {
+    push(el.currentSrc);
+    push(el.src);
+  }
+  const attrs = [
+    "src",
+    "href",
+    "data-src",
+    "data-original",
+    "data-origin",
+    "data-src-original",
+    "data-url",
+    "data-thumb",
+    "data-image",
+    "data-file",
+    "data-path",
+    "origin-src",
+  ];
+  for (const attr of attrs) {
+    try { push(el.getAttribute?.(attr)); } catch (_) {}
+  }
+  try { push(leExtractCssUrl(getComputedStyle(el).backgroundImage)); } catch (_) {}
+  return out;
+}
+
+function leFindContextImageSource(event) {
+  const pathList = event?.composedPath ? event.composedPath() : [];
+  const candidates = [];
+  for (const el of pathList) candidates.push(...leCollectImageCandidates(el));
+  const target = event?.target;
+  const img = target && (target.tagName === "IMG" ? target : (target.closest ? target.closest("img") : null));
+  if (img) candidates.push(...leCollectImageCandidates(img));
+  for (const candidate of candidates) {
+    const normalized = leNormalizeContextSource(candidate);
+    if (normalized && normalized.kind !== "unsupported") return candidate;
+  }
+  return "";
+}
+
+async function leBuildContextImagePayload(source, targetDir) {
+  const normalized = leNormalizeContextSource(source);
+  if (!normalized || normalized.kind === "unsupported") {
+    return { ok: false, reason: normalized?.reason || "unsupported_source" };
+  }
+  if (normalized.kind === "file") {
+    return {
+      ok: true,
+      payload: {
+        kind: "file",
+        path: normalized.source,
+        fileName: normalized.fileName,
+        mime: normalized.mime || "",
+        targetDir,
+      },
+    };
+  }
+  if (normalized.kind === "data" || normalized.kind === "remote") {
+    try {
+      const res = await fetch(normalized.source, { credentials: "include" });
+      if (!res || (typeof res.ok === "boolean" && !res.ok)) return { ok: false, reason: "fetch_failed" };
+      const blob = await res.blob();
+      const bytes = await blob.arrayBuffer();
+      return {
+        ok: true,
+        payload: {
+          kind: "bytes",
+          bytes,
+          fileName: normalized.fileName || "context-image",
+          mime: normalized.mime || blob.type || res.headers?.get?.("content-type") || "",
+          targetDir,
+        },
+      };
+    } catch (_) {
+      return { ok: false, reason: "fetch_failed" };
+    }
+  }
+  return { ok: false, reason: "unsupported_source" };
+}
+
+async function leRefreshAfterContextSave() {
+  try { await window.localEmote?.refreshLibraryIndex?.(); } catch (_) {}
+  try { await overlayInstance?.refresh?.(); } catch (_) {}
+}
+
 function leInstallImageContextMenu() {
   if (window.__le_image_context_menu_installed) return;
   window.__le_image_context_menu_installed = true;
@@ -4058,23 +4178,13 @@ function leInstallImageContextMenu() {
     try {
       const cfg = window.localEmote?.getConfig?.();
       if (!cfg || cfg.imageContextMenu === false) return;
-      const target = e.target;
-      const img = target && (target.tagName === "IMG" ? target : (target.closest ? target.closest("img") : null));
-      if (!img) { 
-        // try to find in message container if not directly img
-        // but for now just return
-        leContextMenuState.lastImagePath = ""; 
-        return; 
+      const src = leFindContextImageSource(e);
+      try { dbg('contextmenu: image source detected', { src: src ? src.slice(0, 80) : '' }); } catch (_) {}
+      if (!src) {
+        leContextMenuState.lastImageSource = "";
+        return;
       }
-      const src = img.currentSrc || img.src || img.getAttribute?.("data-src") || img.getAttribute?.("data-original") || img.getAttribute?.("data-origin") || img.getAttribute?.("data-src-original") || "";
-      const path = leGetImagePathFromSrc(src);
-      try { dbg('contextmenu: img detected', { src: src ? src.slice(0, 50) : '', path, tagName: img.tagName }); } catch (_) {}
-      
-      if (!path) { 
-        leContextMenuState.lastImagePath = ""; 
-        return; 
-      }
-      leContextMenuState.lastImagePath = path;
+      leContextMenuState.lastImageSource = src;
       leContextMenuState.lastTs = Date.now();
     } catch (e) {
       try { dbg('contextmenu error', e); } catch (_) {}
@@ -4090,9 +4200,13 @@ function leInstallImageContextMenu() {
     qContextMenu.classList.add("le-context-menu");
     const cfg = window.localEmote?.getConfig?.();
     if (!cfg || cfg.imageContextMenu === false) return;
-    if (!leContextMenuState.lastImagePath || Date.now() - leContextMenuState.lastTs > 1500) return;
+    if (!leContextMenuState.lastImageSource || Date.now() - leContextMenuState.lastTs > 1500) return;
     if (qContextMenu.querySelector(".le-context-item")) return;
     const listPromise = (async () => {
+      if (window.localEmote?.getContextSaveTargets) {
+        const targets = await window.localEmote.getContextSaveTargets();
+        return Array.isArray(targets) ? targets : [];
+      }
       const cfg = window.localEmote?.getConfig?.();
       const rootDir = cfg?.rootDir;
       let packs = [];
@@ -4114,6 +4228,45 @@ function leInstallImageContextMenu() {
     })();
       if (!listPromise || typeof listPromise.then !== "function") return;
       listPromise.then((subMenuList) => {
+        leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
+          try {
+            const src = leContextMenuState.lastImageSource;
+            const targetDir = data?.dir || (data?.path && String(data.path).startsWith("__dir__|") ? String(data.path).slice("__dir__|".length) : "");
+            if (!src) {
+              leShowToast("保存失败: 找不到图片来源", "error");
+              return;
+            }
+            if (!targetDir) {
+              leShowToast("保存失败: " + leContextReasonText("root_dir_missing"), "error");
+              return;
+            }
+            const built = await leBuildContextImagePayload(src, targetDir);
+            if (!built.ok) {
+              leShowToast("保存失败: " + leContextReasonText(built.reason), "error");
+              return;
+            }
+            try {
+              const cfg = window.localEmote?.getConfig?.();
+              if (cfg) {
+                cfg.lastCategory = "__dir__|" + targetDir;
+                window.localEmote.setConfig(cfg);
+              }
+            } catch (_) {}
+            const res = await window.localEmote.saveContextImage(built.payload);
+            dbg('contextmenu: save result', res);
+            if (!res || !res.ok) {
+              leShowToast("保存失败: " + leContextReasonText(res?.reason), "error");
+              return;
+            }
+            await leRefreshAfterContextSave();
+            const label = data?.name || res.name || "";
+            leShowToast(label ? `保存成功: ${label}` : "保存成功", "success");
+          } catch (e) {
+            dbg('contextmenu: save handler error', e);
+            leShowToast("保存出错: " + (e?.message || "未知错误"), "error");
+          }
+        }, false);
+        return;
         leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
           try {
             const src = leContextMenuState.lastImagePath;

@@ -13,6 +13,12 @@ const {
   cleanConfigRefs,
   resolveInsideRoot,
 } = require("./library-index");
+const {
+  createUniqueImagePath,
+  MAX_CONTEXT_IMAGE_BYTES,
+  prepareContextImageBuffer,
+  resolveContextTargetDir,
+} = require("./context-save-utils");
 
 const SLUG = "local_emotes";
 
@@ -407,6 +413,62 @@ async function deleteEmote(filePath) {
   }
 }
 
+function bufferFromIpcBytes(bytes) {
+  if (!bytes) return Buffer.alloc(0);
+  if (Buffer.isBuffer(bytes)) return bytes;
+  if (bytes instanceof ArrayBuffer) return Buffer.from(bytes);
+  if (ArrayBuffer.isView(bytes)) return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (Array.isArray(bytes)) return Buffer.from(bytes);
+  if (typeof bytes === "string") return Buffer.from(bytes, "base64");
+  return Buffer.alloc(0);
+}
+
+async function saveContextImage(payload) {
+  try {
+    const cfg = readConfigSync();
+    if (!cfg.rootDir) return { ok: false, reason: "root_dir_missing" };
+    const targetDir = resolveContextTargetDir(cfg.rootDir, payload?.targetDir || cfg.rootDir);
+    let bytes = null;
+    let fileName = payload?.fileName || "";
+    let mime = payload?.mime || "";
+
+    if (payload?.kind === "file") {
+      const sourcePath = payload.path || payload.source;
+      if (!sourcePath) return { ok: false, reason: "source_missing" };
+      const stat = await fsp.stat(sourcePath).catch(() => null);
+      if (!stat || !stat.isFile()) return { ok: false, reason: "source_missing" };
+      if (stat.size <= 0 || stat.size > MAX_CONTEXT_IMAGE_BYTES) return { ok: false, reason: "bad_size" };
+      bytes = await fsp.readFile(sourcePath);
+      fileName = fileName || path.basename(sourcePath);
+    } else if (payload?.kind === "bytes") {
+      bytes = bufferFromIpcBytes(payload.bytes);
+      fileName = fileName || "context-image";
+    } else {
+      return { ok: false, reason: "unsupported_source" };
+    }
+
+    const prepared = prepareContextImageBuffer({ bytes, fileName, mime });
+    if (!prepared.ok) return { ok: false, reason: prepared.reason };
+    await fsp.mkdir(targetDir, { recursive: true });
+    const unique = createUniqueImagePath(targetDir, prepared.fileName, (candidate) => fs.existsSync(candidate));
+    await fsp.writeFile(unique.path, prepared.buffer);
+    await refreshLibraryIndex();
+    return {
+      ok: true,
+      absPath: unique.path,
+      name: unique.name,
+      dir: targetDir,
+      url: toLocalUrl(unique.path),
+    };
+  } catch (e) {
+    const reason = e?.message === "root_dir_missing" || e?.message === "target_outside_root"
+      ? e.message
+      : "write_failed";
+    log("saveContextImage error", reason, e?.message || e);
+    return { ok: false, reason };
+  }
+}
+
 ensureDirSync(PLUGIN_DATA_DIR);
 ensureDirSync(EMOTE_DIR);
 initializeConfigSync();
@@ -725,6 +787,7 @@ ipcMain.handle("localEmote:copyImageToPack", async (_e, src, packDir) => copyIma
 ipcMain.handle("localEmote:renamePack", async (_e, packDir, title) => renamePack(packDir, title));
 ipcMain.handle("localEmote:deleteEmote", async (_e, filePath) => deleteEmote(filePath));
 ipcMain.handle("localEmote:updatePackMeta", async (_e, packDir, patch) => updatePackMeta(packDir, patch));
+ipcMain.handle("localEmote:saveContextImage", async (_e, payload) => saveContextImage(payload));
 ipcMain.handle("localEmote:openDataDir", async () => {
   try {
     LiteLoader.api.openPath(PLUGIN_DATA_DIR);

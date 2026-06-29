@@ -9,6 +9,10 @@ const {
   planSendEmote,
   toSendResult,
 } = require("./send-engine");
+const {
+  buildContextSaveTargets,
+  normalizeContextImageSource,
+} = require("./context-save-utils");
 /* path module removed: provide string helpers instead */
 function basename(p) {
   try {
@@ -216,6 +220,15 @@ async function deleteEmote(filePath) {
 async function updatePackMeta(packDir, patch) {
   try { return await ipcRenderer.invoke("localEmote:updatePackMeta", packDir, patch); } catch (_) { return { ok: false }; }
 }
+async function getContextSaveTargets() {
+  try {
+    const index = await getLibraryIndex(false);
+    return buildContextSaveTargets(index);
+  } catch (_) { return []; }
+}
+async function saveContextImage(payload) {
+  try { return await ipcRenderer.invoke("localEmote:saveContextImage", payload); } catch (e) { return { ok: false, reason: e?.message || "write_failed" }; }
+}
 
 // 调用主进程：运行时 IPC 捕获开关与日志访问
 async function setCaptureEnabled(v) {
@@ -372,6 +385,8 @@ contextBridge.exposeInMainWorld("localEmote", {
   renamePack,
   deleteEmote,
   updatePackMeta,
+  getContextSaveTargets,
+  saveContextImage,
   // 分类与导入（插件数据目录内的分类存储）
   listCategories: ipcListCategories,
   addCategory: ipcAddCategory,
@@ -383,6 +398,7 @@ contextBridge.exposeInMainWorld("localEmote", {
   openDataDir: ipcOpenDataDir,
   // 工具
   toLocalUrl,
+  normalizeContextImageSource,
   // 发送
   sendEmote,
   // 调试：IPC 捕获控制与日志
