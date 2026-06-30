@@ -3642,24 +3642,46 @@ const tryInject = () => {
 };
 
 const leContextMenuState = { lastImageSource: "", lastTs: 0 };
+const leContextPointerState = { x: 0, y: 0, ts: 0 };
 const leSubMenuTimers = new Map();
+let leContextItemSeq = 0;
 
 function leEnsureContextMenuStyle() {
   if (document.getElementById('le-contextmenu-style')) return;
   const style = document.createElement('style');
   style.id = 'le-contextmenu-style';
   style.textContent = `
-.le-sub-context-menu{position:fixed;top:var(--top);left:var(--left);z-index:2147483647;min-width:160px;max-width:320px;max-height:260px;display:none;background:var(--bg_transparent,#2b2b2b);color:var(--text_primary,#e5e7eb);border:1px solid rgba(0,0,0,.1);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);overflow:hidden}
-.le-sub-context-menu.show{display:block}
-.le-sub-context-menu .le-sub-scroll{max-height:260px;overflow:auto}
-.le-sub-context-menu .le-sub-item{padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap}
-.le-sub-context-menu .le-sub-item:hover{background:var(--bg_hover,rgba(0,0,0,.08))}
+.le-sub-context-menu{position:fixed;top:var(--top,0px);left:var(--left,0px);z-index:2147483647;min-width:var(--le-menu-min-width,168px);max-width:min(300px,calc(100vw - 8px));max-height:var(--le-sub-menu-max-height,min(70vh,320px));background:var(--le-menu-bg,var(--bg_transparent,#2b2b2b));color:var(--le-menu-color,var(--text_primary,#e5e7eb));border:var(--le-menu-border,1px solid rgba(255,255,255,.10));border-radius:var(--le-menu-radius,8px);box-shadow:var(--le-menu-shadow,0 14px 34px rgba(0,0,0,.34));font-family:var(--le-menu-font-family,inherit);font-size:var(--le-menu-font-size,14px);line-height:var(--le-menu-line-height,20px);overflow:hidden;box-sizing:border-box;opacity:0;pointer-events:none;transform:translateX(-4px) scale(.98);transition:opacity .12s ease,transform .12s ease}
+.le-sub-context-menu.show{opacity:1;pointer-events:auto;transform:translateX(0) scale(1)}
+.le-sub-context-menu .le-sub-scroll{max-height:var(--le-sub-menu-max-height,min(70vh,320px));overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:var(--le-menu-scroll-padding,4px 0);box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--le-menu-scrollbar-thumb,rgba(255,255,255,.18)) transparent}
+.le-sub-context-menu .le-sub-scroll::-webkit-scrollbar{width:6px;height:6px}
+.le-sub-context-menu .le-sub-scroll::-webkit-scrollbar-track{background:transparent}
+.le-sub-context-menu .le-sub-scroll::-webkit-scrollbar-thumb{background:var(--le-menu-scrollbar-thumb,rgba(255,255,255,.18));border:2px solid transparent;border-radius:999px;background-clip:content-box}
+.le-sub-context-menu .le-sub-scroll::-webkit-scrollbar-thumb:hover{background:var(--le-menu-scrollbar-thumb-hover,rgba(255,255,255,.28));background-clip:content-box}
+.le-sub-context-menu .le-sub-item{min-height:var(--le-menu-item-height,32px);padding:var(--le-menu-item-padding,6px 12px);display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap;box-sizing:border-box;max-width:100%;font:inherit;color:inherit}
+.le-sub-context-menu .le-sub-item span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.le-sub-context-menu .le-sub-item:hover{background:var(--bg_hover,rgba(255,255,255,.08))}
 .le-sub-context-menu .le-sub-arrow{margin-left:auto;opacity:.7}
 `;
   document.head.appendChild(style);
 }
 
+function leRecordContextPointer(event) {
+  if (!event || typeof event.clientX !== "number" || typeof event.clientY !== "number") return;
+  leContextPointerState.x = event.clientX;
+  leContextPointerState.y = event.clientY;
+  leContextPointerState.ts = Date.now();
+}
+
+function leClearAllSubMenuTimers() {
+  for (const timer of leSubMenuTimers.values()) {
+    try { clearTimeout(timer); } catch (_) {}
+  }
+  leSubMenuTimers.clear();
+}
+
 function leRemoveAllSubMenus() {
+  leClearAllSubMenuTimers();
   document.querySelectorAll(".le-sub-context-menu").forEach((el) => {
     try { el.__leCleanup?.(); } catch (_) {}
     el.remove();
@@ -3725,6 +3747,391 @@ function leBuildFolderTree(flatList) {
     }
   });
   return tree;
+}
+
+function leClearSubMenuTimer(id) {
+  if (!id) return;
+  const timer = leSubMenuTimers.get(id);
+  if (timer) {
+    try { clearTimeout(timer); } catch (_) {}
+    leSubMenuTimers.delete(id);
+  }
+}
+
+function leSetSubMenuCloseTimer(id, element) {
+  if (!id || !element) return;
+  leClearSubMenuTimer(id);
+  const timer = setTimeout(() => {
+    element.classList.remove("show");
+    element.querySelectorAll(".le-sub-context-menu").forEach((child) => child.classList.remove("show"));
+  }, 220);
+  leSubMenuTimers.set(id, timer);
+}
+
+function leClampContextMenuPosition(left, top, width, height) {
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const safeWidth = Math.max(width || 168, 1);
+  const safeHeight = Math.max(height || 80, 1);
+  const maxLeft = viewportWidth ? Math.max(4, viewportWidth - safeWidth - 4) : left;
+  const maxTop = viewportHeight ? Math.max(4, viewportHeight - safeHeight - 4) : top;
+  return {
+    left: Math.max(4, Math.min(left, maxLeft)),
+    top: Math.max(4, Math.min(top, maxTop)),
+  };
+}
+
+function leComputeSubMenuMaxHeight(anchorRect, viewportHeight) {
+  const safeViewportHeight = viewportHeight || document.documentElement.clientHeight || 0;
+  const margin = 8;
+  const fallback = 320;
+  if (!safeViewportHeight || !anchorRect) return fallback;
+  const below = safeViewportHeight - anchorRect.top - margin;
+  const fullViewportLimit = safeViewportHeight - margin * 2;
+  return Math.max(136, Math.min(360, fullViewportLimit, below));
+}
+
+function leReadStyleValue(style, prop) {
+  const value = style?.getPropertyValue?.(prop);
+  return value && value.trim() ? value.trim() : "";
+}
+
+function leReadStyleDirect(style, prop) {
+  const value = style?.[prop];
+  return value && String(value).trim() ? String(value).trim() : "";
+}
+
+function leIsUsableMenuBackground(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text || text === "transparent") return false;
+  if (text === "rgba(0, 0, 0, 0)" || text === "rgba(0,0,0,0)") return false;
+  if (text === "rgb(0, 0, 0)" || text === "rgb(0,0,0)") return false;
+  return true;
+}
+
+function lePickQQNTMenuBackground(menuStyle, itemStyle) {
+  const candidates = [
+    leReadStyleDirect(menuStyle, "backgroundColor"),
+    leReadStyleValue(menuStyle, "--bg_transparent"),
+    leReadStyleValue(menuStyle, "--bg_primary"),
+    leReadStyleValue(menuStyle, "--bg_secondary"),
+    leReadStyleValue(menuStyle, "--bg_menu"),
+    leReadStyleDirect(itemStyle, "backgroundColor"),
+    leReadStyleValue(itemStyle, "--bg_transparent"),
+    leReadStyleValue(itemStyle, "--bg_primary"),
+    leReadStyleValue(itemStyle, "--bg_secondary"),
+  ];
+  return candidates.find(leIsUsableMenuBackground) || "var(--bg_transparent,var(--bg_primary,var(--bg_secondary,#242424)))";
+}
+
+function leReadQQNTMenuTheme(qContextMenu, sourceItem) {
+  const read = (style, prop, fallback) => {
+    const value = style?.getPropertyValue?.(prop);
+    return value && value.trim() ? value.trim() : fallback;
+  };
+  const readDirect = (style, prop, fallback) => {
+    const value = style?.[prop];
+    return value && String(value).trim() ? String(value).trim() : fallback;
+  };
+  try {
+    const menuStyle = qContextMenu ? getComputedStyle(qContextMenu) : null;
+    const itemStyle = sourceItem ? getComputedStyle(sourceItem) : null;
+    const itemHeight = readDirect(itemStyle, "height", "");
+    const paddingTop = readDirect(itemStyle, "paddingTop", "");
+    const paddingRight = readDirect(itemStyle, "paddingRight", "");
+    const paddingBottom = readDirect(itemStyle, "paddingBottom", "");
+    const paddingLeft = readDirect(itemStyle, "paddingLeft", "");
+    const itemPadding = paddingTop && paddingRight && paddingBottom && paddingLeft
+      ? `${paddingTop} ${paddingRight} ${paddingBottom} ${paddingLeft}`
+      : "6px 12px";
+    return {
+      bg: lePickQQNTMenuBackground(menuStyle, itemStyle),
+      color: readDirect(menuStyle, "color", "var(--text_primary,#e5e7eb)"),
+      border: readDirect(menuStyle, "border", "1px solid rgba(255,255,255,.10)"),
+      radius: readDirect(menuStyle, "borderRadius", "8px"),
+      shadow: readDirect(menuStyle, "boxShadow", "0 14px 34px rgba(0,0,0,.34)"),
+      fontFamily: readDirect(itemStyle, "fontFamily", readDirect(menuStyle, "fontFamily", "inherit")),
+      fontSize: readDirect(itemStyle, "fontSize", readDirect(menuStyle, "fontSize", "14px")),
+      lineHeight: readDirect(itemStyle, "lineHeight", readDirect(menuStyle, "lineHeight", "20px")),
+      minWidth: readDirect(menuStyle, "minWidth", "168px"),
+      itemHeight: itemHeight && itemHeight !== "auto" ? itemHeight : "32px",
+      itemPadding,
+      scrollPadding: read(menuStyle, "--le-menu-scroll-padding", "4px 0"),
+      scrollbarThumb: read(menuStyle, "--le-menu-scrollbar-thumb", "rgba(255,255,255,.18)"),
+      scrollbarThumbHover: read(menuStyle, "--le-menu-scrollbar-thumb-hover", "rgba(255,255,255,.28)"),
+    };
+  } catch (_) {
+    return {
+      bg: "var(--bg_transparent,var(--bg_primary,var(--bg_secondary,#242424)))",
+      color: "var(--text_primary,#e5e7eb)",
+      border: "1px solid rgba(255,255,255,.10)",
+      radius: "8px",
+      shadow: "0 14px 34px rgba(0,0,0,.34)",
+      fontFamily: "inherit",
+      fontSize: "14px",
+      lineHeight: "20px",
+      minWidth: "168px",
+      itemHeight: "32px",
+      itemPadding: "6px 12px",
+      scrollPadding: "4px 0",
+      scrollbarThumb: "rgba(255,255,255,.18)",
+      scrollbarThumbHover: "rgba(255,255,255,.28)",
+    };
+  }
+}
+
+function leApplyQQNTMenuTheme(menuEl, theme) {
+  if (!menuEl || !theme) return;
+  const setVar = (name, value) => {
+    if (value) menuEl.style.setProperty(name, value);
+  };
+  setVar("--le-menu-bg", theme.bg);
+  setVar("--le-menu-color", theme.color);
+  setVar("--le-menu-border", theme.border);
+  setVar("--le-menu-radius", theme.radius);
+  setVar("--le-menu-shadow", theme.shadow);
+  setVar("--le-menu-font-family", theme.fontFamily);
+  setVar("--le-menu-font-size", theme.fontSize);
+  setVar("--le-menu-line-height", theme.lineHeight);
+  setVar("--le-menu-min-width", theme.minWidth);
+  setVar("--le-menu-item-height", theme.itemHeight);
+  setVar("--le-menu-item-padding", theme.itemPadding);
+  setVar("--le-menu-scroll-padding", theme.scrollPadding);
+  setVar("--le-menu-scrollbar-thumb", theme.scrollbarThumb);
+  setVar("--le-menu-scrollbar-thumb-hover", theme.scrollbarThumbHover);
+}
+
+function leHandleSubMenuWheel(scrollEl, event) {
+  if (!scrollEl || !event || event.__leContextWheelHandled) return;
+  event.__leContextWheelHandled = true;
+  const rawDelta = Number(event.deltaY || event.deltaX || 0);
+  const mode = Number(event.deltaMode || 0);
+  const unit = mode === 1 ? 16 : (mode === 2 ? Math.max(scrollEl.clientHeight || 0, 160) : 1);
+  const delta = rawDelta * unit;
+  const maxTop = Math.max(0, (scrollEl.scrollHeight || 0) - (scrollEl.clientHeight || 0));
+  const nextTop = Math.max(0, Math.min(maxTop, (scrollEl.scrollTop || 0) + delta));
+  if (Number.isFinite(nextTop)) scrollEl.scrollTop = nextTop;
+  event.preventDefault?.();
+  event.stopPropagation?.();
+  event.stopImmediatePropagation?.();
+}
+
+function leOpenContextSubMenu(menuEl, anchorEl) {
+  if (!menuEl || !anchorEl || !anchorEl.getBoundingClientRect) return;
+  const rect = anchorEl.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const gap = 2;
+  const level = Number(menuEl.getAttribute("data-level") || "0") || 0;
+  menuEl.classList.add("show");
+  menuEl.style.zIndex = String(2147483647 + level);
+  menuEl.style.visibility = "hidden";
+  const menuWidth = Math.max(menuEl.offsetWidth || 180, 168);
+  const maxMenuHeight = leComputeSubMenuMaxHeight(rect, viewportHeight);
+  menuEl.style.setProperty("--le-sub-menu-max-height", `${maxMenuHeight}px`);
+  const scrollEl = menuEl.querySelector(".le-sub-scroll");
+  const contentHeight = Math.max(scrollEl?.scrollHeight || menuEl.scrollHeight || menuEl.offsetHeight || 80, 48);
+  const menuHeight = Math.min(contentHeight, maxMenuHeight);
+  let left = rect.right + gap;
+  if (viewportWidth && left + menuWidth > viewportWidth - 4) left = rect.left - menuWidth - gap;
+  const pos = leClampContextMenuPosition(left, rect.top, menuWidth, menuHeight);
+  menuEl.style.setProperty("--top", `${pos.top}px`);
+  menuEl.style.setProperty("--left", `${pos.left}px`);
+  menuEl.style.visibility = "";
+}
+
+function leOpenSubMenuFromAnchor(menuEl, anchorEl) {
+  leOpenContextSubMenu(menuEl, anchorEl);
+}
+
+function lePointInsideElement(x, y, el) {
+  if (!el || !el.getBoundingClientRect) return false;
+  const rect = el.getBoundingClientRect();
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function leCreateContextSubMenu(parentEl, menuItems, callback, level = 0, theme = null) {
+  const subMenuEl = document.createElement("div");
+  const scrollEl = document.createElement("div");
+  const menuId = `le-submenu-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  scrollEl.classList.add("le-sub-scroll");
+  subMenuEl.appendChild(scrollEl);
+  subMenuEl.classList.add("le-sub-context-menu", `level-${level}`);
+  leApplyQQNTMenuTheme(subMenuEl, theme);
+  subMenuEl.setAttribute("data-menu-id", menuId);
+  subMenuEl.setAttribute("data-level", String(level));
+  parentEl.setAttribute("data-submenu-id", menuId);
+  subMenuEl.style.setProperty("--top", "0px");
+  subMenuEl.style.setProperty("--left", "0px");
+
+  const keepOpenChain = () => {
+    leClearSubMenuTimer(menuId);
+    let current = parentEl;
+    while (current) {
+      const submenuId = current.getAttribute?.("data-submenu-id");
+      if (submenuId) {
+        leClearSubMenuTimer(submenuId);
+        const submenu = document.querySelector(`[data-menu-id="${submenuId}"]`);
+        if (submenu) submenu.classList.add("show");
+      }
+      const parentMenu = current.closest?.(".le-sub-context-menu");
+      current = parentMenu ? document.querySelector(`[data-submenu-id="${parentMenu.getAttribute("data-menu-id")}"]`) : null;
+    }
+  };
+
+  const closeSiblingChildren = (activeItem) => {
+    const siblings = activeItem?.parentElement?.children || [];
+    for (const sibling of siblings) {
+      if (sibling === activeItem) continue;
+      const siblingMenuId = sibling.getAttribute?.("data-submenu-id");
+      const siblingMenu = siblingMenuId ? document.querySelector(`[data-menu-id="${siblingMenuId}"]`) : null;
+      if (siblingMenu) {
+        leClearSubMenuTimer(siblingMenuId);
+        siblingMenu.classList.remove("show");
+        siblingMenu.querySelectorAll(".le-sub-context-menu").forEach((child) => child.classList.remove("show"));
+      }
+    }
+  };
+
+  const openMenuAt = (event) => {
+    leRecordContextPointer(event);
+    keepOpenChain();
+    leOpenContextSubMenu(subMenuEl, parentEl);
+    event?.stopPropagation?.();
+  };
+  const handleSubMenuWheel = (event) => {
+    const target = event?.target;
+    if (!target || !subMenuEl.contains(target)) return;
+    leHandleSubMenuWheel(scrollEl, event);
+  };
+
+  subMenuEl.addEventListener("mouseenter", openMenuAt);
+  subMenuEl.addEventListener("pointerenter", openMenuAt);
+  subMenuEl.addEventListener("mousemove", openMenuAt);
+  subMenuEl.addEventListener("pointermove", openMenuAt);
+  subMenuEl.addEventListener("wheel", handleSubMenuWheel, { capture: true, passive: false });
+  document.addEventListener("wheel", handleSubMenuWheel, { capture: true, passive: false });
+
+  subMenuEl.addEventListener("mouseleave", (event) => {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget && parentEl.contains(relatedTarget)) return;
+    for (const childMenu of document.querySelectorAll(".le-sub-context-menu")) {
+      if (relatedTarget && childMenu.contains(relatedTarget)) return;
+    }
+    leSetSubMenuCloseTimer(menuId, subMenuEl);
+  });
+
+  scrollEl.addEventListener("wheel", (event) => {
+    leHandleSubMenuWheel(scrollEl, event);
+  }, { capture: true, passive: false });
+
+  (Array.isArray(menuItems) ? menuItems : []).forEach((menuData) => {
+    const subMenuItemEl = document.createElement("div");
+    const textSpan = document.createElement("span");
+    const children = Array.isArray(menuData?.children) ? menuData.children : [];
+    subMenuItemEl.classList.add("le-sub-item");
+    textSpan.textContent = menuData?.name || menuData?.relativeDir || menuData?.path || "";
+    textSpan.style.flexGrow = "1";
+    subMenuItemEl.appendChild(textSpan);
+    subMenuItemEl.menuData = menuData;
+    subMenuItemEl.addEventListener("mouseenter", () => closeSiblingChildren(subMenuItemEl));
+    subMenuItemEl.addEventListener("mousemove", () => closeSiblingChildren(subMenuItemEl));
+    subMenuItemEl.addEventListener("pointermove", () => closeSiblingChildren(subMenuItemEl));
+
+    if (children.length > 0) {
+      subMenuItemEl.classList.add("has-submenu");
+      const arrowSpan = document.createElement("span");
+      arrowSpan.className = "le-sub-arrow";
+      arrowSpan.textContent = ">";
+      subMenuItemEl.appendChild(arrowSpan);
+      const childSubMenu = leCreateContextSubMenu(subMenuItemEl, children, callback, level + 1, theme);
+      const openChildMenu = (event) => {
+        leRecordContextPointer(event);
+        closeSiblingChildren(subMenuItemEl);
+        const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
+        leClearSubMenuTimer(childMenuId);
+        if (typeof childSubMenu.__leOpenFromAnchor === "function") childSubMenu.__leOpenFromAnchor(event.currentTarget);
+      };
+      subMenuItemEl.addEventListener("mouseenter", openChildMenu);
+      subMenuItemEl.addEventListener("pointerenter", openChildMenu);
+      subMenuItemEl.addEventListener("mousemove", openChildMenu);
+      subMenuItemEl.addEventListener("pointermove", openChildMenu);
+      subMenuItemEl.addEventListener("mouseleave", (event) => {
+        const relatedTarget = event.relatedTarget;
+        const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
+        const childMenu = document.querySelector(`[data-menu-id="${childMenuId}"]`);
+        if (relatedTarget && childMenu && childMenu.contains(relatedTarget)) return;
+        if (childMenu) leSetSubMenuCloseTimer(childMenuId, childMenu);
+      });
+    }
+
+    leBindContextActivate(subMenuItemEl, (event) => {
+      event.stopPropagation();
+      callback(event, menuData);
+      leClearAllSubMenuTimers();
+      leRemoveAllSubMenus();
+      document.querySelector(".q-context-menu")?.remove();
+    });
+    scrollEl.appendChild(subMenuItemEl);
+  });
+
+  const openFromParent = (event) => {
+    leRecordContextPointer(event);
+    leOpenContextSubMenu(subMenuEl, event?.currentTarget || parentEl);
+  };
+  function leOpenIfPointerOverAnchor() {
+    try { if (parentEl.matches(":hover")) leOpenContextSubMenu(subMenuEl, parentEl); } catch (_) {}
+    if (!leContextPointerState.ts || Date.now() - leContextPointerState.ts > 5000) return;
+    if (lePointInsideElement(leContextPointerState.x, leContextPointerState.y, parentEl)) {
+      leOpenContextSubMenu(subMenuEl, parentEl);
+    }
+  }
+  const openFromPointer = (event) => {
+    leRecordContextPointer(event);
+    leOpenIfPointerOverAnchor();
+  };
+  const closeOnOutsidePointer = (event) => {
+    const target = event?.target;
+    const rootMenu = parentEl.closest?.(".q-context-menu");
+    if (target && (parentEl.contains(target) || subMenuEl.contains(target) || rootMenu?.contains(target))) return;
+    leRemoveAllSubMenus();
+  };
+  const closeOnEscape = (event) => {
+    if (event?.key === "Escape") leRemoveAllSubMenus();
+  };
+
+  parentEl.addEventListener("mouseenter", openFromParent);
+  parentEl.addEventListener("mouseover", openFromParent);
+  parentEl.addEventListener("pointerenter", openFromParent);
+  parentEl.addEventListener("mousemove", openFromParent);
+  parentEl.addEventListener("pointermove", openFromParent);
+  parentEl.addEventListener("mouseleave", (event) => {
+    const relatedTarget = event.relatedTarget;
+    const submenu = document.querySelector(`[data-menu-id="${menuId}"]`);
+    if (relatedTarget && submenu && submenu.contains(relatedTarget)) return;
+    leSetSubMenuCloseTimer(menuId, subMenuEl);
+  });
+  document.addEventListener("pointermove", openFromPointer, true);
+  document.addEventListener("mousemove", openFromPointer, true);
+  if (level === 0) {
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+  }
+  subMenuEl.__leOpenFromAnchor = (anchorEl = parentEl) => {
+    leClearSubMenuTimer(menuId);
+    leOpenContextSubMenu(subMenuEl, anchorEl);
+  };
+  subMenuEl.__leCleanup = () => {
+    document.removeEventListener("pointermove", openFromPointer, true);
+    document.removeEventListener("mousemove", openFromPointer, true);
+    document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.removeEventListener("keydown", closeOnEscape, true);
+    document.removeEventListener("wheel", handleSubMenuWheel, { capture: true });
+  };
+  document.body.appendChild(subMenuEl);
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(leOpenIfPointerOverAnchor);
+  setTimeout(leOpenIfPointerOverAnchor, 80);
+  return subMenuEl;
 }
 
 function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
@@ -3980,37 +4387,104 @@ function leBindContextActivate(el, handler) {
   el.addEventListener("click", onActivate, true);
 }
 
-function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMainClick = false) {
-  const contextItem = qContextMenu.querySelector(`:scope > :not(.menu-stickers-wrapper,[disabled="true"])`)?.cloneNode(true) ??
-    qContextMenu.querySelector(`.q-context-menu-item:not([disabled="true"])`)?.cloneNode(true);
-  if (!contextItem) return;
+function leCreateContextItemFallback(title) {
+  const item = document.createElement("div");
+  const textEl = document.createElement("span");
+  item.className = "q-context-menu-item q-context-menu-item--normal le-context-item";
+  item.setAttribute("role", "menuitem");
+  textEl.className = "q-context-menu-item__text";
+  textEl.textContent = title;
+  item.appendChild(textEl);
+  return item;
+}
+
+function leStripQQNTContextState(root) {
+  if (!root) return;
+  const nodes = [root, ...Array.from(root.querySelectorAll?.("*") || [])];
+  nodes.forEach((node) => {
+    try { node.removeAttribute("id"); } catch (_) {}
+    try { node.removeAttribute("href"); } catch (_) {}
+    try { node.removeAttribute("target"); } catch (_) {}
+    try { node.removeAttribute("disabled"); } catch (_) {}
+    try { node.removeAttribute("aria-controls"); } catch (_) {}
+    try { node.removeAttribute("aria-expanded"); } catch (_) {}
+    try { node.removeAttribute("data-submenu-id"); } catch (_) {}
+    try { node.removeAttribute("data-menu-id"); } catch (_) {}
+    try {
+      for (const attr of Array.from(node.attributes || [])) {
+        const name = String(attr.name || "").toLowerCase();
+        if (name.startsWith("bf-") || name.startsWith("data-bf-")) node.removeAttribute(attr.name);
+      }
+    } catch (_) {}
+    try {
+      for (const className of Array.from(node.classList || [])) {
+        if (
+          className.startsWith("bf-") ||
+          className === "lite-tools-vue-component" ||
+          className === "vue-component" ||
+          className === "sub-context-menu-item" ||
+          className === "le-context-item" ||
+          className === "le-sub-item" ||
+          className === "has-submenu"
+        ) {
+          node.classList.remove(className);
+        }
+      }
+    } catch (_) {}
+  });
+}
+
+function leCreateCleanContextItem(sourceItem, title) {
+  const contextItem = sourceItem ? sourceItem.cloneNode(true) : leCreateContextItemFallback(title);
+  leStripQQNTContextState(contextItem);
   contextItem.classList.add("le-context-item");
-  
-  // Clean up styles
+  if (!contextItem.classList.contains("q-context-menu-item")) contextItem.classList.add("q-context-menu-item");
+  if (!contextItem.classList.contains("q-context-menu-item--normal")) contextItem.classList.add("q-context-menu-item--normal");
+  contextItem.setAttribute("data-le-context-item-id", `le-context-item-${++leContextItemSeq}`);
+  contextItem.setAttribute("role", contextItem.getAttribute("role") || "menuitem");
   contextItem.style.removeProperty("color");
-  
-  if (contextItem.classList.contains("q-context-menu-item__text")) contextItem.innerText = title;
-  else {
-    const textEl = contextItem.querySelector(".q-context-menu-item__text");
-    if (textEl) textEl.innerText = title;
+  contextItem.style.cursor = "pointer";
+  contextItem.querySelectorAll(".lite-tools-context-next-icon,.le-context-next-icon").forEach((el) => el.remove());
+
+  let textEl = contextItem.classList.contains("q-context-menu-item__text")
+    ? contextItem
+    : contextItem.querySelector(".q-context-menu-item__text");
+  if (!textEl) {
+    textEl = document.createElement("span");
+    textEl.className = "q-context-menu-item__text";
+    contextItem.appendChild(textEl);
   }
+  textEl.textContent = title;
+  return contextItem;
+}
+
+function leAppendContextSubMenuIcon(contextItem) {
+  if (!contextItem || contextItem.querySelector(".le-context-next-icon")) return;
+  const icon = document.createElement("div");
+  icon.className = "q-context-menu-item__icon icon_next lite-tools-context-next-icon le-context-next-icon";
+  icon.innerHTML = '<i class="q-icon"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.6953 3L10.7993 8.10522L5.6953 13.2104L5 12.5161L9.4098 8.10522L5 3.69439L5.6953 3Z"></path></svg></i>';
+  contextItem.appendChild(icon);
+}
+
+function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMainClick = false) {
+  const sourceItem = qContextMenu.querySelector(`:scope > .q-context-menu-item:not([disabled="true"])`) ??
+    qContextMenu.querySelector(`.q-context-menu-item:not([disabled="true"])`);
+  const contextItem = leCreateCleanContextItem(sourceItem, title);
+  if (!contextItem) return;
+  const theme = leReadQQNTMenuTheme(qContextMenu, sourceItem);
   
   let hasSubMenu = false;
   if (Array.isArray(subMenuList) && subMenuList.length) {
     hasSubMenu = true;
-    // Add arrow icon if text element exists
-    if (contextItem.querySelector(".q-context-menu-item__text")) {
-      const subMenuIconEl = `<div class="q-context-menu-item__icon icon_next lite-tools-context-next-icon"><i class="q-icon"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.6953 3L10.7993 8.10522L5.6953 13.2104L5 12.5161L9.4098 8.10522L5 3.69439L5.6953 3Z"></path></svg></i></div>`;
-      contextItem.insertAdjacentHTML("beforeend", subMenuIconEl);
-    }
+    leAppendContextSubMenuIcon(contextItem);
     const tree = subMenuList.some((item) => Array.isArray(item?.children)) ? subMenuList : leBuildFolderTree(subMenuList);
-    leCreateNestedSubMenu(contextItem, tree, callback, 0);
+    leCreateContextSubMenu(contextItem, tree, callback, 0, theme);
   } else if (typeof callback === "function") {
     // No submenu, always click
     leBindContextActivate(contextItem, (event) => {
       event.stopPropagation();
       callback(event);
-      leSubMenuTimers.clear();
+      leClearAllSubMenuTimers();
       leRemoveAllSubMenus();
       qContextMenu.remove();
     });
@@ -4023,7 +4497,7 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
     leBindContextActivate(contextItem, (e) => {
       e.stopPropagation();
       callback(e);
-      leSubMenuTimers.clear();
+      leClearAllSubMenuTimers();
       leRemoveAllSubMenus();
       qContextMenu.remove();
     });
@@ -4220,6 +4694,7 @@ function leInstallImageContextMenu() {
   leEnsureContextMenuStyle();
   document.addEventListener("contextmenu", (e) => {
     try {
+      leRecordContextPointer(e);
       const cfg = window.localEmote?.getConfig?.();
       if (!cfg || cfg.imageContextMenu === false) return;
       const src = leFindContextImageSource(e);
@@ -4236,11 +4711,13 @@ function leInstallImageContextMenu() {
   }, true);
   const moCtx = new MutationObserver(() => {
     try {
+      const activeQContextMenu = document.querySelector(".q-context-menu");
+      if (!activeQContextMenu) {
+        leRemoveAllSubMenus();
+        return;
+      }
       const qContextMenu = document.querySelector(".q-context-menu:not(.le-context-menu)");
-    if (!qContextMenu) {
-      leRemoveAllSubMenus();
-      return;
-    }
+    if (!qContextMenu) return;
     qContextMenu.classList.add("le-context-menu");
     const cfg = window.localEmote?.getConfig?.();
     if (!cfg || cfg.imageContextMenu === false) return;
