@@ -50,7 +50,9 @@ npm run typecheck
 ```
 
 ## 许可证
-MIT License
+GNU General Public License v3.0（`GPL-3.0-or-later`）
+
+本项目使用 GPL v3 开源许可证发布。你可以在遵守 GPL v3 条款的前提下复制、分发和修改本项目；若分发修改版本或衍生作品，也需要继续以 GPL 兼容方式开放源代码。
 
 ## 主文件标记
 
