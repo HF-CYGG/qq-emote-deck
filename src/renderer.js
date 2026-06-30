@@ -4230,8 +4230,9 @@ function leInstallImageContextMenu() {
       listPromise.then((subMenuList) => {
         leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
           try {
+            const target = data || subMenuList?.[0];
             const src = leContextMenuState.lastImageSource;
-            const targetDir = data?.dir || (data?.path && String(data.path).startsWith("__dir__|") ? String(data.path).slice("__dir__|".length) : "");
+            const targetDir = target?.dir || (target?.path && String(target.path).startsWith("__dir__|") ? String(target.path).slice("__dir__|".length) : "");
             if (!src) {
               leShowToast("保存失败: 找不到图片来源", "error");
               return;
@@ -4259,13 +4260,13 @@ function leInstallImageContextMenu() {
               return;
             }
             await leRefreshAfterContextSave();
-            const label = data?.name || res.name || "";
+            const label = target?.name || res.name || "";
             leShowToast(label ? `保存成功: ${label}` : "保存成功", "success");
           } catch (e) {
             dbg('contextmenu: save handler error', e);
             leShowToast("保存出错: " + (e?.message || "未知错误"), "error");
           }
-        }, false);
+        }, true);
         return;
         leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
           try {
