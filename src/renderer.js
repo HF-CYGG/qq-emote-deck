@@ -1,15 +1,26 @@
+import * as qqntAdapter from "./renderer-qqnt-adapter.js";
+
 // 设置页与渲染进程入口
+function isDebugConfigEnabled() {
+  try {
+    const cfg = window.localEmote && window.localEmote.getConfig ? window.localEmote.getConfig() : null;
+    return !!(cfg && cfg.debug);
+  } catch (_) {
+    return false;
+  }
+}
 
 // --- LE main-world bridge injection (works under contextIsolation) ---
 try {
   (function installLEMainWorldBridge() {
     if (window.__LE_BRIDGE_ATTEMPTED) return; // avoid duplicate
     window.__LE_BRIDGE_ATTEMPTED = true;
+    const debugBridge = isDebugConfigEnabled();
     // 1) Inject a script into MAIN WORLD to expose proxy functions
     try {
       const s = document.createElement('script');
       s.id = 'le-main-bridge';
-      s.textContent = `(() => {\n  try {\n    if (window.__LE_BRIDGE_INSTALLED) return;\n    window.__LE_BRIDGE_INSTALLED = true;\n    try {\n      if (!window.__le_sel_patch) {\n        window.__le_sel_patch = true;\n        const __le_findEd = () => {\n          try {\n            const sels = ['[contenteditable=\"true\"]','div[role=\"textbox\"]','div[contenteditable=\"plaintext-only\"]','[contenteditable]','textarea','input[type=\"text\"]'];\n            for (const s of sels) {\n              const list = document.querySelectorAll(s);\n              for (const el of list) {\n                if (!el || el.offsetParent === null) continue;\n                if (el.closest('.two-col-layout__aside, .contact-top-bar, .main-search, .recent-contact, .lite-tools-vue-component .search')) continue;\n                return el;\n              }\n            }\n          } catch (_) {}\n          return null;\n        };\n        const __le_orig = Selection.prototype.getRangeAt;\n        Selection.prototype.getRangeAt = function(i) {\n          try {\n            if (this.rangeCount === 0) {\n              const ed = __le_findEd();\n              const r = document.createRange();\n              if (ed) r.selectNodeContents(ed); else r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              try { this.addRange(r); } catch (_) {}\n            }\n            return __le_orig.call(this, i || 0);\n          } catch (e) {\n            try {\n              const r = document.createRange();\n              r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              return r;\n            } catch (_) {}\n            throw e;\n          }\n        };\n      }\n    } catch (e) {}\n    const pending = new Map();\n    window.addEventListener('message', (e) => {\n      const d = e.data;\n      if (!d || d.__from !== 'le-isolated' || !d.id) return;\n      const p = pending.get(d.id);\n      if (!p) return;\n      pending.delete(d.id);\n      if (d.error) {\n        const err = new Error(d.error.message || 'LE bridge error');\n        err.name = d.error.name || err.name;\n        err.stack = d.error.stack || err.stack;\n        p.reject(err);\n      } else {\n        p.resolve(d.result);\n      }\n    }, false);\n    function send(type, payload) {\n      const id = Math.random().toString(36).slice(2);\n      return new Promise((resolve, reject) => {\n        pending.set(id, { resolve, reject });\n        window.postMessage({ __to: 'le-isolated', id, type, payload }, '*');\n      });\n    }\n    // Expose proxies in MAIN WORLD\n    window.le_sendMessage = function(peer, messages, opts) {\n      return send('sendMessage', { peer, messages, opts });\n    };\n    window.le_convertMessage = function(messages) {\n      return send('convertMessage', { messages });\n    };\n    window.derivePeer = function() {\n      return send('derivePeer', {});\n    };\n  } catch (e) {\n    console.error('[local_emotes] main-world bridge install failed', e);\n  }\n})();`;
+      s.textContent = `(() => {\n  try {\n    if (window.__LE_BRIDGE_INSTALLED) return;\n    window.__LE_BRIDGE_INSTALLED = true;\n    try {\n      if (${debugBridge ? "true" : "false"} && !window.__le_sel_patch) {\n        window.__le_sel_patch = true;\n        const __le_findEd = () => {\n          try {\n            const sels = ['[contenteditable=\"true\"]','div[role=\"textbox\"]','div[contenteditable=\"plaintext-only\"]','[contenteditable]','textarea','input[type=\"text\"]'];\n            for (const s of sels) {\n              const list = document.querySelectorAll(s);\n              for (const el of list) {\n                if (!el || el.offsetParent === null) continue;\n                if (el.closest('.two-col-layout__aside, .contact-top-bar, .main-search, .recent-contact, .lite-tools-vue-component .search')) continue;\n                return el;\n              }\n            }\n          } catch (_) {}\n          return null;\n        };\n        const __le_orig = Selection.prototype.getRangeAt;\n        Selection.prototype.getRangeAt = function(i) {\n          try {\n            if (this.rangeCount === 0) {\n              const ed = __le_findEd();\n              const r = document.createRange();\n              if (ed) r.selectNodeContents(ed); else r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              try { this.addRange(r); } catch (_) {}\n            }\n            return __le_orig.call(this, i || 0);\n          } catch (e) {\n            try {\n              const r = document.createRange();\n              r.selectNodeContents(document.body || document.documentElement);\n              r.collapse(false);\n              return r;\n            } catch (_) {}\n            throw e;\n          }\n        };\n      }\n    } catch (e) {}\n    const pending = new Map();\n    window.addEventListener('message', (e) => {\n      const d = e.data;\n      if (!d || d.__from !== 'le-isolated' || !d.id) return;\n      const p = pending.get(d.id);\n      if (!p) return;\n      pending.delete(d.id);\n      if (d.error) {\n        const err = new Error(d.error.message || 'LE bridge error');\n        err.name = d.error.name || err.name;\n        err.stack = d.error.stack || err.stack;\n        p.reject(err);\n      } else {\n        p.resolve(d.result);\n      }\n    }, false);\n    function send(type, payload) {\n      const id = Math.random().toString(36).slice(2);\n      return new Promise((resolve, reject) => {\n        pending.set(id, { resolve, reject });\n        window.postMessage({ __to: 'le-isolated', id, type, payload }, '*');\n      });\n    }\n    // Expose proxies in MAIN WORLD\n    window.le_sendMessage = function(peer, messages, opts) {\n      return send('sendMessage', { peer, messages, opts });\n    };\n    window.le_convertMessage = function(messages) {\n      return send('convertMessage', { messages });\n    };\n    window.derivePeer = function() {\n      return send('derivePeer', {});\n    };\n  } catch (e) {\n    console.error('[local_emotes] main-world bridge install failed', e);\n  }\n})();`;
       document.documentElement.appendChild(s);
       s.remove();
     } catch (e) {
@@ -52,6 +63,7 @@ try {
 try {
   (function installLEMainWorldService() {
     try {
+      const serviceDebug = isDebugConfigEnabled();
       const s2 = document.createElement('script');
       s2.id = 'le-main-service';
       s2.textContent = `(() => {
@@ -233,7 +245,7 @@ try {
             } catch (_) {}
           };
           try {
-            if (!window.__le_curAioWatchTimer) {
+            if (${serviceDebug ? "true" : "false"} && !window.__le_curAioWatchTimer) {
               __le_initCurAioWatch();
               window.__le_curAioWatchTimer = setInterval(__le_initCurAioWatch, 500);
             }
@@ -501,7 +513,7 @@ try {
             } catch (_) {}
           };
           try {
-            if (!window.__le_peer_cache_timer) {
+            if (${serviceDebug ? "true" : "false"} && !window.__le_peer_cache_timer) {
               __le_refreshPeerCache();
               window.__le_peer_cache_timer = setInterval(__le_refreshPeerCache, 1200);
             }
@@ -800,11 +812,29 @@ function injectLEStylesOnce() {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
     padding: 6px; border-radius: 8px; cursor: pointer;
     transition: background-color .15s, box-shadow .15s;
+    touch-action: manipulation;
   }
   #local-emote-overlay .le-card:hover { background: var(--le-hover-bg); }
+  #local-emote-overlay .le-card.le-dragging {
+    opacity: .58;
+    position: relative;
+    z-index: 20;
+    pointer-events: none;
+    transform: translate3d(var(--le-drag-x, 0px), var(--le-drag-y, 0px), 0) scale(.96);
+    transition: none;
+    cursor: grabbing;
+    will-change: transform, opacity;
+  }
+  #local-emote-overlay .le-card.le-drag-over {
+    background: linear-gradient(0deg, rgba(59,130,246,.10), rgba(59,130,246,.10)), var(--le-hover-bg);
+    box-shadow: inset 0 0 0 1px var(--le-primary), 0 0 0 1px rgba(59,130,246,.18);
+  }
+  #local-emote-overlay .le-card.le-sort-animating { will-change: transform; }
   #local-emote-overlay .le-img {
     width: 64px; height: 64px; object-fit: contain;
     background: var(--le-input-bg); border: 1px solid var(--le-image-border); border-radius: 8px;
+    -webkit-user-drag: none;
+    user-select: none;
   }
   #local-emote-overlay .le-name {
     font-size: 12px; color: var(--le-muted);
@@ -837,6 +867,21 @@ function injectLEStylesOnce() {
   /* 滚动条 */
   #local-emote-overlay .le-grid::-webkit-scrollbar { width: 8px; height: 8px; }
   #local-emote-overlay .le-grid::-webkit-scrollbar-thumb { background-color: rgba(0,0,0,.25); border-radius: 8px; }
+  #local-emote-overlay .le-search-row {
+    display: flex; align-items: center; gap: 8px; padding: 10px 10px 0;
+  }
+  #local-emote-overlay .le-search {
+    width: 100%; height: 30px;
+  }
+  #local-emote-overlay .le-empty {
+    grid-column: 1 / -1;
+    padding: 18px 12px;
+    color: var(--le-muted);
+    text-align: center;
+    border: 1px dashed var(--le-border);
+    border-radius: 10px;
+    background: var(--le-input-bg);
+  }
   @media (prefers-color-scheme: dark) {
     #local-emote-overlay .le-grid::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,.25); }
   }
@@ -871,9 +916,15 @@ function injectLEStylesOnce() {
   /* 底部表情包选择栏（圆形封面） */
   #local-emote-overlay .le-packs-bar { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--le-divider); overflow: auto hidden; background: var(--le-header-bg); }
   #local-emote-overlay .le-packs-bar::-webkit-scrollbar { height: 8px; }
-  #local-emote-overlay .le-pack { position: relative; width: 36px; height: 36px; border-radius: 999px; background: var(--le-input-bg); border: 1px solid var(--le-border); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .15s, background-color .15s, box-shadow .15s; }
+  #local-emote-overlay .le-pack { position: relative; width: 36px; height: 36px; border-radius: 999px; background: var(--le-input-bg); border: 1px solid var(--le-border); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .15s, background-color .15s, box-shadow .15s; touch-action: manipulation; }
   #local-emote-overlay .le-pack:hover { background: var(--le-hover-bg); }
   #local-emote-overlay .le-pack.active { box-shadow: inset 0 0 0 2px var(--le-primary); }
+  #local-emote-overlay .le-pack.le-dragging { opacity: .62; position: relative; z-index: 20; pointer-events: none; transform: translate3d(var(--le-drag-x, 0px), var(--le-drag-y, 0px), 0) scale(.9); transition: none; cursor: grabbing; will-change: transform, opacity; }
+  #local-emote-overlay .le-pack.le-drag-over {
+    background: linear-gradient(0deg, rgba(59,130,246,.12), rgba(59,130,246,.12)), var(--le-hover-bg);
+    box-shadow: inset 0 0 0 1px var(--le-primary), 0 0 0 1px rgba(59,130,246,.18);
+  }
+  #local-emote-overlay .le-pack.le-sort-animating { will-change: transform; }
   #local-emote-overlay .le-pack img { width: 28px; height: 28px; object-fit: cover; border-radius: 999px; }
   #local-emote-overlay .le-pack .le-pack-badge { position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px; border-radius: 999px; background: var(--le-primary); opacity: .85; }
 
@@ -2052,6 +2103,7 @@ function tryInsertImageToEditor(absPath) {
     return insertImageAtCursor(editor, url);
   } catch (_) { return false; }
 }
+try { window.__localEmoteInsertImage = tryInsertImageToEditor; } catch (_) {}
 function dbg(...args) {
   try {
     const cfg = window.localEmote && window.localEmote.getConfig ? window.localEmote.getConfig() : null;
@@ -2627,7 +2679,7 @@ function scanStoreForMsgElements(maxResults = 8) {
   }
 }
 // 暴露给控制台
-try { window.scanStoreForMsgElements = scanStoreForMsgElements; } catch (_) {}
+try { if (isDebugConfigEnabled()) window.scanStoreForMsgElements = scanStoreForMsgElements; } catch (_) {}
 
 // === 辅助函数结束 ===
 
@@ -2664,6 +2716,14 @@ function buildOverlay() {
   // 可滚动区域（包含“历史表情”和“本地表情”两个网格）
   const scroll = document.createElement('div');
   scroll.className = 'le-scroll';
+  const searchRow = document.createElement('div');
+  searchRow.className = 'le-search-row';
+  const searchInput = document.createElement('input');
+  searchInput.className = 'le-input le-search';
+  searchInput.type = 'search';
+  searchInput.placeholder = '搜索表情、文件名或目录';
+  searchInput.spellcheck = false;
+  searchRow.appendChild(searchInput);
 
   // 历史表情 Section
   const titleRecent = document.createElement('div');
@@ -2704,6 +2764,7 @@ function buildOverlay() {
   scroll.appendChild(recentGrid);
   scroll.appendChild(titleMain);
   scroll.appendChild(grid);
+  content.appendChild(searchRow);
   content.appendChild(scroll);
   content.appendChild(packsBar);
   card.appendChild(content);
@@ -2711,6 +2772,7 @@ function buildOverlay() {
 
   // 状态
   let currentList = [];
+  let searchQuery = "";
   let activeIndex = -1;
   let selectedCat = '__recent__';
   let categoriesCache = [];
@@ -2832,6 +2894,389 @@ function buildOverlay() {
     } catch (_) { return null; }
   }
 
+  function filterItems(items) {
+    const query = String(searchQuery || '').trim().toLowerCase();
+    if (!query) return Array.isArray(items) ? items : [];
+    return (Array.isArray(items) ? items : []).filter((it) => {
+      const text = [
+        it && it.name,
+        it && it.baseName,
+        it && it.path,
+        it && it.absPath,
+        it && it.relativePath,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return text.includes(query);
+    });
+  }
+
+  function appendEmptyState(target, text) {
+    const empty = document.createElement('div');
+    empty.className = 'le-empty';
+    empty.textContent = text;
+    target.appendChild(empty);
+  }
+
+  const LE_SORT_DRAG_THRESHOLD = 6;
+  const LE_SORT_HOLD_DELAY = 180;
+  const LE_SORT_ANIMATION_MS = 150;
+
+  function leNormalizeOrderPath(value) {
+    if (typeof value !== 'string') return '';
+    const normalized = value.trim().replace(/\\/g, '/');
+    if (!normalized) return '';
+    if (/^[A-Za-z]:\/$/.test(normalized)) return normalized;
+    return normalized.replace(/\/+$/g, '');
+  }
+
+  function leCurrentPackDir() {
+    if (typeof selectedCat !== 'string' || !selectedCat.startsWith('__dir__|')) return '';
+    return selectedCat.slice('__dir__|'.length);
+  }
+
+  function leAutoScrollSortContainer(scrollEl, ev, axis) {
+    if (!scrollEl || !ev) return;
+    const rect = scrollEl.getBoundingClientRect();
+    const edge = 30;
+    const step = 18;
+    if (axis === 'x') {
+      if (ev.clientX < rect.left + edge) scrollEl.scrollLeft -= step;
+      else if (ev.clientX > rect.right - edge) scrollEl.scrollLeft += step;
+      return;
+    }
+    if (ev.clientY < rect.top + edge) scrollEl.scrollTop -= step;
+    else if (ev.clientY > rect.bottom - edge) scrollEl.scrollTop += step;
+  }
+
+  function lePrefersReducedMotion() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function leCaptureSortRects(container, selector) {
+    const rects = new Map();
+    if (!container) return rects;
+    for (const node of Array.from(container.querySelectorAll(selector))) {
+      try { rects.set(node, node.getBoundingClientRect()); } catch (_) {}
+    }
+    return rects;
+  }
+
+  function leCancelSortAnimations(nodes) {
+    for (const node of Array.isArray(nodes) ? nodes : []) {
+      if (!node) continue;
+      try {
+        if (node.__leSortAnimFrame) cancelAnimationFrame(node.__leSortAnimFrame);
+        if (node.__leSortAnimTimer) clearTimeout(node.__leSortAnimTimer);
+        node.__leSortAnimFrame = null;
+        node.__leSortAnimTimer = null;
+        node.classList.remove('le-sort-animating');
+        node.style.transition = '';
+        node.style.transform = '';
+      } catch (_) {}
+    }
+  }
+
+  function leAnimateSortReflow(container, selector, beforeRects, options = {}) {
+    if (!container || !beforeRects) return;
+    const nodes = Array.from(container.querySelectorAll(selector));
+    const dragItem = options.dragItem || null;
+    const duration = Number.isFinite(options.duration) ? Math.max(80, Math.floor(options.duration)) : LE_SORT_ANIMATION_MS;
+    if (lePrefersReducedMotion()) return;
+    if (typeof requestAnimationFrame !== 'function') return;
+    const movedNodes = [];
+    nodes.forEach((node) => {
+      if (node === dragItem) return;
+      const before = beforeRects.get(node);
+      if (!before) return;
+      const after = leMeasureSortSlotRect(node);
+      if (!after) return;
+      const dx = before.left - after.left;
+      const dy = before.top - after.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      movedNodes.push({ node, dx, dy });
+    });
+    leCancelSortAnimations(movedNodes.map((item) => item.node));
+    movedNodes.forEach(({ node, dx, dy }) => {
+      node.classList.add('le-sort-animating');
+      node.style.transition = '';
+      node.style.transform = `translate(${dx}px, ${dy}px)`;
+      node.__leSortAnimFrame = requestAnimationFrame(() => {
+        node.style.transition = `transform ${duration}ms cubic-bezier(.2,.8,.2,1)`;
+        node.style.transform = 'translate(0, 0)';
+      });
+      node.__leSortAnimTimer = window.setTimeout(() => {
+        try {
+          node.classList.remove('le-sort-animating');
+          node.style.transition = '';
+          node.style.transform = '';
+          node.__leSortAnimFrame = null;
+          node.__leSortAnimTimer = null;
+        } catch (_) {}
+      }, duration + 80);
+    });
+  }
+
+  function leMeasureSortSlotRect(dragItem) {
+    if (!dragItem) return null;
+    const prevTransform = dragItem.style.transform;
+    const prevTransition = dragItem.style.transition;
+    try {
+      dragItem.style.transition = 'none';
+      dragItem.style.transform = 'none';
+      return dragItem.getBoundingClientRect();
+    } catch (_) {
+      return null;
+    } finally {
+      dragItem.style.transform = prevTransform;
+      dragItem.style.transition = prevTransition;
+    }
+  }
+
+  function leMoveSortDragItem(state, ev) {
+    if (!state || !state.dragItem || !ev) return;
+    const rect = leMeasureSortSlotRect(state.dragItem);
+    if (!rect) return;
+    const grabOffsetX = Number.isFinite(state.grabOffsetX) ? state.grabOffsetX : rect.width / 2;
+    const grabOffsetY = Number.isFinite(state.grabOffsetY) ? state.grabOffsetY : rect.height / 2;
+    const tx = ev.clientX - grabOffsetX - rect.left;
+    const ty = ev.clientY - grabOffsetY - rect.top;
+    state.dragItem.style.setProperty('--le-drag-x', `${tx}px`);
+    state.dragItem.style.setProperty('--le-drag-y', `${ty}px`);
+  }
+
+  function leResetSortDragItem(dragItem) {
+    if (!dragItem) return;
+    try {
+      dragItem.style.removeProperty('--le-drag-x');
+      dragItem.style.removeProperty('--le-drag-y');
+    } catch (_) {}
+  }
+
+  function leGetSortReferenceNode(dragItem, target, before) {
+    if (!target) return null;
+    if (before) return target;
+    return target.nextSibling === dragItem ? dragItem.nextSibling : target.nextSibling;
+  }
+
+  function leIsSortReferenceUnchanged(dragItem, referenceNode) {
+    if (!dragItem) return true;
+    return dragItem === referenceNode || dragItem.nextSibling === referenceNode;
+  }
+
+  function leInstallPointerSorter(container, selector, options = {}) {
+    if (!container) return;
+    if (typeof container.__leSortCleanup === 'function') container.__leSortCleanup();
+    let state = null;
+    const axis = options.axis || 'y';
+    const scrollEl = options.scrollContainer || container;
+
+    const clearOver = () => {
+      if (state && state.overItem) state.overItem.classList.remove('le-drag-over');
+      if (state) state.overItem = null;
+    };
+    const clearHoldTimer = () => {
+      if (state && state.holdTimer) {
+        window.clearTimeout(state.holdTimer);
+        state.holdTimer = null;
+      }
+    };
+    function startDragging(ev) {
+      if (!state || state.dragging) return;
+      clearHoldTimer();
+      state.dragging = true;
+      state.dragItem.classList.add('le-dragging');
+      container.classList.add('le-sorting');
+      leMoveSortDragItem(state, ev);
+      hidePreview();
+      try { ev?.preventDefault?.(); } catch (_) {}
+    }
+    const finish = (ev) => {
+      if (!state) return;
+      const { dragItem, pointerId, dragging } = state;
+      clearHoldTimer();
+      clearOver();
+      dragItem.classList.remove('le-dragging');
+      leResetSortDragItem(dragItem);
+      container.classList.remove('le-sorting');
+      try { dragItem.releasePointerCapture(pointerId); } catch (_) {}
+      document.removeEventListener('pointermove', onPointerMove, true);
+      document.removeEventListener('pointerup', onPointerUp, true);
+      document.removeEventListener('pointercancel', onPointerCancel, true);
+      if (dragging) {
+        dragItem.__leSuppressClickOnce = true;
+        window.setTimeout(() => { dragItem.__leSuppressClickOnce = false; }, 500);
+        try {
+          const ordered = Array.from(container.querySelectorAll(selector));
+          if (typeof options.onCommit === 'function') options.onCommit(ordered);
+        } catch (e) {
+          dbg('drag sort commit error', e && e.message);
+        }
+        if (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+      }
+      state = null;
+    };
+    const onPointerDown = (ev) => {
+      if (ev.button !== 0) return;
+      if (typeof options.canStart === 'function' && !options.canStart()) return;
+      const target = ev.target && ev.target.closest ? ev.target.closest(selector) : null;
+      if (!target || !container.contains(target)) return;
+      const startRect = target.getBoundingClientRect();
+      if (ev.target && ev.target.closest && ev.target.closest('button,input,textarea,select,a')) return;
+      state = {
+        pointerId: ev.pointerId,
+        startX: ev.clientX,
+        startY: ev.clientY,
+        grabOffsetX: ev.clientX - startRect.left,
+        grabOffsetY: ev.clientY - startRect.top,
+        dragItem: target,
+        dragging: false,
+        overItem: null,
+        holdTimer: null,
+        lastMoveEvent: null,
+      };
+      try { target.setPointerCapture(ev.pointerId); } catch (_) {}
+      state.holdTimer = window.setTimeout(() => startDragging(ev), LE_SORT_HOLD_DELAY);
+      document.addEventListener('pointermove', onPointerMove, true);
+      document.addEventListener('pointerup', onPointerUp, true);
+      document.addEventListener('pointercancel', onPointerCancel, true);
+    };
+    const onPointerMove = (ev) => {
+      if (!state || state.pointerId !== ev.pointerId) return;
+      if (state.lastMoveEvent === ev) return;
+      state.lastMoveEvent = ev;
+      const dx = ev.clientX - state.startX;
+      const dy = ev.clientY - state.startY;
+      if (!state.dragging && Math.hypot(dx, dy) < LE_SORT_DRAG_THRESHOLD) return;
+      startDragging(ev);
+      leMoveSortDragItem(state, ev);
+      ev.preventDefault();
+      leAutoScrollSortContainer(scrollEl, ev, axis);
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const target = under && under.closest ? under.closest(selector) : null;
+      if (!target || target === state.dragItem || !container.contains(target)) return;
+      clearOver();
+      target.classList.add('le-drag-over');
+      state.overItem = target;
+      const rect = target.getBoundingClientRect();
+      const before = axis === 'x'
+        ? ev.clientX < rect.left + rect.width / 2
+        : ev.clientY < rect.top + rect.height / 2;
+      const referenceNode = leGetSortReferenceNode(state.dragItem, target, before);
+      if (leIsSortReferenceUnchanged(state.dragItem, referenceNode)) {
+        leMoveSortDragItem(state, ev);
+        return;
+      }
+      const beforeRects = leCaptureSortRects(container, selector);
+      container.insertBefore(state.dragItem, referenceNode);
+      leAnimateSortReflow(container, selector, beforeRects, { dragItem: state.dragItem, duration: LE_SORT_ANIMATION_MS });
+      leMoveSortDragItem(state, ev);
+    };
+    const onPointerUp = (ev) => {
+      if (state && state.pointerId === ev.pointerId) finish(ev);
+    };
+    const onPointerCancel = (ev) => {
+      if (state && state.pointerId === ev.pointerId) finish(ev);
+    };
+    function lePreventNativeSortDrag(ev) {
+      const target = ev.target && ev.target.closest ? ev.target.closest(selector) : null;
+      if (!target || !container.contains(target)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+
+    container.addEventListener('pointerdown', onPointerDown);
+    container.addEventListener('pointermove', onPointerMove);
+    container.addEventListener('pointerup', onPointerUp);
+    container.addEventListener('pointercancel', onPointerCancel);
+    container.addEventListener('dragstart', lePreventNativeSortDrag, true);
+    container.__leSortCleanup = () => {
+      container.removeEventListener('pointerdown', onPointerDown);
+      container.removeEventListener('pointermove', onPointerMove);
+      container.removeEventListener('pointerup', onPointerUp);
+      container.removeEventListener('pointercancel', onPointerCancel);
+      container.removeEventListener('dragstart', lePreventNativeSortDrag, true);
+      document.removeEventListener('pointermove', onPointerMove, true);
+      document.removeEventListener('pointerup', onPointerUp, true);
+      document.removeEventListener('pointercancel', onPointerCancel, true);
+      if (state) finish();
+      container.__leSortCleanup = null;
+    };
+  }
+
+  function leCommitImageOrder(nodes) {
+    if (searchQuery.trim()) return;
+    const dir = leCurrentPackDir();
+    if (!dir) return;
+    const dirKey = leNormalizeOrderPath(dir);
+    const order = (Array.isArray(nodes) ? nodes : [])
+      .map((node) => leNormalizeOrderPath(node?.dataset?.leSortPath || ''))
+      .filter(Boolean);
+    if (order.length === 0) return;
+    try {
+      const cfg = window.localEmote.getConfig();
+      cfg.imageOrder = cfg.imageOrder || {};
+      cfg.imageOrder[dirKey] = order;
+      window.localEmote.setConfig(cfg);
+      const byPath = new Map(currentList.map((item) => [leNormalizeOrderPath(item.absPath || item.path), item]));
+      const seen = new Set();
+      currentList = order.map((item) => {
+        seen.add(item);
+        return byPath.get(item);
+      }).filter(Boolean).concat(currentList.filter((item) => !seen.has(leNormalizeOrderPath(item.absPath || item.path))));
+      (Array.isArray(nodes) ? nodes : []).forEach((node, index) => { node.dataset.index = String(index); });
+      activeIndex = Math.min(Math.max(activeIndex, 0), Math.max(0, currentList.length - 1));
+      updateActiveClasses();
+      dbg('imageOrder saved', dirKey, order.length);
+    } catch (e) {
+      dbg('imageOrder save failed', e && e.message);
+    }
+  }
+
+  function leCommitPackOrder(nodes) {
+    const order = (Array.isArray(nodes) ? nodes : [])
+      .map((node) => leNormalizeOrderPath(node?.dataset?.leSortDir || ''))
+      .filter(Boolean);
+    if (order.length === 0) return;
+    try {
+      const cfg = window.localEmote.getConfig();
+      cfg.packOrder = order;
+      window.localEmote.setConfig(cfg);
+      const byDir = new Map(packsCache.map((pack) => [leNormalizeOrderPath(pack.dir || pack.path), pack]));
+      const seen = new Set();
+      packsCache = order.map((dir) => {
+        seen.add(dir);
+        return byDir.get(dir);
+      }).filter(Boolean).concat(packsCache.filter((pack) => !seen.has(leNormalizeOrderPath(pack.dir || pack.path))));
+      dbg('packOrder saved', order.length);
+    } catch (e) {
+      dbg('packOrder save failed', e && e.message);
+    }
+  }
+
+  function leInstallSortableGrid(gridEl) {
+    if (searchQuery.trim()) return;
+    leInstallPointerSorter(gridEl, '.le-card', {
+      axis: 'y',
+      scrollContainer: scroll,
+      canStart: () => !searchQuery.trim() && !!leCurrentPackDir(),
+      onCommit: leCommitImageOrder,
+    });
+  }
+
+  function leInstallSortablePacksBar(barEl) {
+    leInstallPointerSorter(barEl, '.le-pack', {
+      axis: 'x',
+      scrollContainer: barEl,
+      onCommit: leCommitPackOrder,
+    });
+  }
+
   function getCards() { return Array.from(grid.querySelectorAll('.le-card')); }
   function getCols() {
     const cs = getComputedStyle(grid).gridTemplateColumns || '';
@@ -2865,6 +3310,12 @@ function buildOverlay() {
     updateActiveClasses();
     try { cards[activeIndex].scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
   }
+  searchInput.addEventListener('input', () => {
+    searchQuery = searchInput.value || "";
+    activeIndex = -1;
+    renderRecentGrid();
+    renderGrid();
+  });
 
   // 新增：渲染“历史表情”
   async function renderRecentGrid() {
@@ -2876,6 +3327,10 @@ function buildOverlay() {
       recentGrid.innerHTML = '';
       let all = [];
       try { all = await window.localEmote.listRecent(); dbg('renderRecentGrid: got', all.length, 'items'); } catch (e) { dbg('renderRecentGrid: listRecent error', e && e.message); all = []; }
+      all = filterItems(all);
+      if (all.length === 0) {
+        appendEmptyState(recentGrid, searchQuery ? '最近使用中没有匹配的表情' : '暂无最近使用');
+      }
       for (let idx = 0; idx < all.length; idx++) {
         const it = all[idx];
         const card = document.createElement('div');
@@ -2927,7 +3382,7 @@ function buildOverlay() {
 
           // 尝试获取环境
           let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-          let peer = await derivePeerAsync();
+          let peer = await qqntAdapter.getCurrentPeer();
           try { ensureSelectionAtEditorEnd(getEditorEl()); } catch (_) {}
 
           // 判定是否必须走 Native：配置为native、按住Alt、或者文件是GIF
@@ -2941,7 +3396,7 @@ function buildOverlay() {
               while (Date.now() < end) {
                 await new Promise(r => setTimeout(r, 100));
                 lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-                peer = await derivePeerAsync();
+                peer = await qqntAdapter.getCurrentPeer();
                 if ((lt || typeof window.leMainRequest === 'function') && peer) break;
               }
             } catch (_) {}
@@ -2964,7 +3419,7 @@ function buildOverlay() {
             try {
               // Standard/Native mode: picSubType=1, asFace=true
               const picSubType = 1;
-              await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: true }]);
+              await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: true });
               sentOk = true;
               dbg('recent click: native send ok');
               try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -2980,7 +3435,7 @@ function buildOverlay() {
             try {
               // Image mode: picSubType=0, asFace=false
               const picSubType = 0;
-              await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: false }]);
+              await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: false });
               sentOk = true;
               dbg('recent click: image native send ok');
               try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -3101,17 +3556,23 @@ function buildOverlay() {
       } else {
         try { all = await window.localEmote.listEmojis(cat); dbg('renderGrid: category', cat, 'items', all.length); } catch (e) { dbg('renderGrid: listEmojis error', e && e.message); all = []; }
       }
-      currentList = all;
+      currentList = filterItems(all);
+      if (currentList.length === 0) {
+        appendEmptyState(grid, searchQuery ? '当前表情包中没有匹配结果' : '当前目录没有可用图片，请导入或选择包含图片的目录');
+      }
       for (let idx = 0; idx < currentList.length; idx++) {
         const it = currentList[idx];
         const card = document.createElement('div');
         card.className = 'le-card';
+        card.draggable = false;
         card.setAttribute('role', 'option');
         card.setAttribute('tabindex', '-1');
         card.dataset.index = String(idx);
+        card.dataset.leSortPath = leNormalizeOrderPath(it.absPath || it.path);
 
         const img = document.createElement('img');
         img.className = 'le-img';
+        img.draggable = false;
         const imgUrl = it.url || it.preview || '';
         img.src = imgUrl;
         img.alt = it.name || '';
@@ -3128,6 +3589,12 @@ function buildOverlay() {
         card.appendChild(img);
         if (name) card.appendChild(name);
         card.addEventListener('click', async (ev) => {
+          if (card.__leSuppressClickOnce) {
+            card.__leSuppressClickOnce = false;
+            ev.preventDefault();
+            ev.stopPropagation();
+            return;
+          }
         const p = it.absPath || it.path;
         dbg('grid click:', p, 'mode=', (window.localEmote.getConfig && window.localEmote.getConfig().sendMode));
         const isGif = /\.gif$/i.test(String(p || ''));
@@ -3140,7 +3607,7 @@ function buildOverlay() {
         
         // 尝试获取环境
         let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-        let peer = await derivePeerAsync();
+        let peer = await qqntAdapter.getCurrentPeer();
 
         // 判定是否必须走 Native
         const needNative = (sendMode === 'native' || (ev && ev.altKey) || isGif);
@@ -3153,7 +3620,7 @@ function buildOverlay() {
             while (Date.now() < end) {
               await new Promise(r => setTimeout(r, 100));
               lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-              peer = await derivePeerAsync();
+              peer = await qqntAdapter.getCurrentPeer();
               if ((lt || typeof window.leMainRequest === 'function') && peer) break;
             }
           } catch (_) {}
@@ -3176,7 +3643,7 @@ function buildOverlay() {
           try {
             // Standard/Native mode: picSubType=1 (local file), asFace=true
             const picSubType = 1;
-            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: true }]);
+            await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: true });
             sentOk = true;
             dbg('grid click: native send ok');
             try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -3192,7 +3659,7 @@ function buildOverlay() {
           try {
             // Image mode: picSubType=0 (local file), asFace=false
             const picSubType = 0;
-            await le_sendMessage(peer, [{ type: 'image', path: p, picSubType, asFace: false }]);
+            await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: false });
             sentOk = true;
             dbg('grid click: image native send ok');
             try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
@@ -3286,6 +3753,7 @@ function buildOverlay() {
         });
         grid.appendChild(card);
       }
+      leInstallSortableGrid(grid);
       applyActiveAfterRender();
     })();
     try { await renderGridPromise; } finally {
@@ -3308,14 +3776,23 @@ function buildOverlay() {
       const key = `__dir__|${dirPath}`;
       const item = document.createElement('div');
       item.className = 'le-pack' + (selectedCat === key ? ' active' : '');
+      item.draggable = false;
       item.title = p.name || dirPath;
+      item.dataset.leSortDir = leNormalizeOrderPath(dirPath);
       const img = document.createElement('img');
+      img.draggable = false;
       const coverAbs = p.coverPath || p.firstPath || p.first || '';
       const coverUrl = (window.localEmote && window.localEmote.toLocalUrl) ? window.localEmote.toLocalUrl(coverAbs) : coverAbs;
       img.src = coverUrl || '';
       img.alt = p.name || '';
       item.appendChild(img);
-      item.addEventListener('click', () => {
+      item.addEventListener('click', (ev) => {
+        if (item.__leSuppressClickOnce) {
+          item.__leSuppressClickOnce = false;
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
         dbg('packsBar click:', key);
         selectedCat = key;
         const cfg = window.localEmote.getConfig();
@@ -3330,6 +3807,7 @@ function buildOverlay() {
       frag.appendChild(item);
     }
     packsBar.appendChild(frag);
+    leInstallSortablePacksBar(packsBar);
   }
 
   async function loadPacks() {
@@ -3568,22 +4046,51 @@ const tryInject = () => {
   dbg('tryInject: result', injected);
 };
 
-const leContextMenuState = { lastImagePath: "", lastTs: 0 };
+const leContextMenuState = { lastImageSource: "", lastTs: 0 };
+const leContextPointerState = { x: 0, y: 0, ts: 0 };
 const leSubMenuTimers = new Map();
+let leContextItemSeq = 0;
 
 function leEnsureContextMenuStyle() {
   if (document.getElementById('le-contextmenu-style')) return;
   const style = document.createElement('style');
   style.id = 'le-contextmenu-style';
   style.textContent = `
-.le-sub-context-menu{position:fixed;top:var(--top);left:var(--left);z-index:100000;min-width:160px;max-width:320px;max-height:260px;display:none;background:var(--bg_transparent,#2b2b2b);color:var(--text_primary,#e5e7eb);border:1px solid rgba(0,0,0,.1);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);overflow:hidden}
-.le-sub-context-menu.show{display:block}
-.le-sub-context-menu .le-sub-scroll{max-height:260px;overflow:auto}
-.le-sub-context-menu .le-sub-item{padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap}
-.le-sub-context-menu .le-sub-item:hover{background:var(--bg_hover,rgba(0,0,0,.08))}
+.le-sub-context-menu{position:fixed;top:var(--top,0px);left:var(--left,0px);z-index:2147483647;min-width:var(--le-menu-min-width,168px);max-width:min(300px,calc(100vw - 8px));max-height:var(--le-sub-menu-max-height,min(70vh,320px));background:var(--le-menu-bg,var(--bg_transparent,#2b2b2b));color:var(--le-menu-color,var(--text_primary,#e5e7eb));border:var(--le-menu-border,1px solid rgba(255,255,255,.10));border-radius:var(--le-menu-radius,8px);box-shadow:var(--le-menu-shadow,0 14px 34px rgba(0,0,0,.34));font-family:var(--le-menu-font-family,inherit);font-size:var(--le-menu-font-size,14px);line-height:var(--le-menu-line-height,20px);overflow:hidden;box-sizing:border-box;opacity:0;pointer-events:none;transform:translateX(-4px) scale(.98);transition:opacity .12s ease,transform .12s ease}
+.le-sub-context-menu.show{opacity:1;pointer-events:auto;transform:translateX(0) scale(1)}
+.le-sub-context-menu .le-sub-scroll{max-height:var(--le-sub-menu-max-height,min(70vh,320px));overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:var(--le-menu-scroll-padding,4px 0);box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--le-menu-scrollbar-thumb,rgba(255,255,255,.18)) transparent}
+.le-sub-context-menu .le-sub-scroll::-webkit-scrollbar{width:6px;height:6px}
+.le-sub-context-menu .le-sub-scroll::-webkit-scrollbar-track{background:transparent}
+.le-sub-context-menu .le-sub-scroll::-webkit-scrollbar-thumb{background:var(--le-menu-scrollbar-thumb,rgba(255,255,255,.18));border:2px solid transparent;border-radius:999px;background-clip:content-box}
+.le-sub-context-menu .le-sub-scroll::-webkit-scrollbar-thumb:hover{background:var(--le-menu-scrollbar-thumb-hover,rgba(255,255,255,.28));background-clip:content-box}
+.le-sub-context-menu .le-sub-item{min-height:var(--le-menu-item-height,32px);padding:var(--le-menu-item-padding,6px 12px);display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap;box-sizing:border-box;max-width:100%;font:inherit;color:inherit}
+.le-sub-context-menu .le-sub-item span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.le-sub-context-menu .le-sub-item:hover{background:var(--bg_hover,rgba(255,255,255,.08))}
 .le-sub-context-menu .le-sub-arrow{margin-left:auto;opacity:.7}
 `;
   document.head.appendChild(style);
+}
+
+function leRecordContextPointer(event) {
+  if (!event || typeof event.clientX !== "number" || typeof event.clientY !== "number") return;
+  leContextPointerState.x = event.clientX;
+  leContextPointerState.y = event.clientY;
+  leContextPointerState.ts = Date.now();
+}
+
+function leClearAllSubMenuTimers() {
+  for (const timer of leSubMenuTimers.values()) {
+    try { clearTimeout(timer); } catch (_) {}
+  }
+  leSubMenuTimers.clear();
+}
+
+function leRemoveAllSubMenus() {
+  leClearAllSubMenuTimers();
+  document.querySelectorAll(".le-sub-context-menu").forEach((el) => {
+    try { el.__leCleanup?.(); } catch (_) {}
+    el.remove();
+  });
 }
 
 function leEnsureToastStyle() {
@@ -3615,7 +4122,7 @@ function leBuildFolderTree(flatList) {
   const map = new Map();
   const sortedList = [...flatList].sort((a, b) => String(a.path || "").localeCompare(String(b.path || ""), "en", { sensitivity: "base" }));
   const commonPrefix = leFindCommonPrefix(sortedList.map((item) => item.path));
-  const prefixLength = commonPrefix ? commonPrefix.length + 1 : 0;
+  const prefixLength = sortedList.length > 1 && commonPrefix ? commonPrefix.length + 1 : 0;
   sortedList.forEach((item) => {
     const adjustedPath = String(item.path || "").substring(prefixLength);
     map.set(adjustedPath, { name: item.name, path: item.path, adjustedPath, children: [] });
@@ -3647,6 +4154,391 @@ function leBuildFolderTree(flatList) {
   return tree;
 }
 
+function leClearSubMenuTimer(id) {
+  if (!id) return;
+  const timer = leSubMenuTimers.get(id);
+  if (timer) {
+    try { clearTimeout(timer); } catch (_) {}
+    leSubMenuTimers.delete(id);
+  }
+}
+
+function leSetSubMenuCloseTimer(id, element) {
+  if (!id || !element) return;
+  leClearSubMenuTimer(id);
+  const timer = setTimeout(() => {
+    element.classList.remove("show");
+    element.querySelectorAll(".le-sub-context-menu").forEach((child) => child.classList.remove("show"));
+  }, 220);
+  leSubMenuTimers.set(id, timer);
+}
+
+function leClampContextMenuPosition(left, top, width, height) {
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const safeWidth = Math.max(width || 168, 1);
+  const safeHeight = Math.max(height || 80, 1);
+  const maxLeft = viewportWidth ? Math.max(4, viewportWidth - safeWidth - 4) : left;
+  const maxTop = viewportHeight ? Math.max(4, viewportHeight - safeHeight - 4) : top;
+  return {
+    left: Math.max(4, Math.min(left, maxLeft)),
+    top: Math.max(4, Math.min(top, maxTop)),
+  };
+}
+
+function leComputeSubMenuMaxHeight(anchorRect, viewportHeight) {
+  const safeViewportHeight = viewportHeight || document.documentElement.clientHeight || 0;
+  const margin = 8;
+  const fallback = 320;
+  if (!safeViewportHeight || !anchorRect) return fallback;
+  const below = safeViewportHeight - anchorRect.top - margin;
+  const fullViewportLimit = safeViewportHeight - margin * 2;
+  return Math.max(136, Math.min(360, fullViewportLimit, below));
+}
+
+function leReadStyleValue(style, prop) {
+  const value = style?.getPropertyValue?.(prop);
+  return value && value.trim() ? value.trim() : "";
+}
+
+function leReadStyleDirect(style, prop) {
+  const value = style?.[prop];
+  return value && String(value).trim() ? String(value).trim() : "";
+}
+
+function leIsUsableMenuBackground(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text || text === "transparent") return false;
+  if (text === "rgba(0, 0, 0, 0)" || text === "rgba(0,0,0,0)") return false;
+  if (text === "rgb(0, 0, 0)" || text === "rgb(0,0,0)") return false;
+  return true;
+}
+
+function lePickQQNTMenuBackground(menuStyle, itemStyle) {
+  const candidates = [
+    leReadStyleDirect(menuStyle, "backgroundColor"),
+    leReadStyleValue(menuStyle, "--bg_transparent"),
+    leReadStyleValue(menuStyle, "--bg_primary"),
+    leReadStyleValue(menuStyle, "--bg_secondary"),
+    leReadStyleValue(menuStyle, "--bg_menu"),
+    leReadStyleDirect(itemStyle, "backgroundColor"),
+    leReadStyleValue(itemStyle, "--bg_transparent"),
+    leReadStyleValue(itemStyle, "--bg_primary"),
+    leReadStyleValue(itemStyle, "--bg_secondary"),
+  ];
+  return candidates.find(leIsUsableMenuBackground) || "var(--bg_transparent,var(--bg_primary,var(--bg_secondary,#242424)))";
+}
+
+function leReadQQNTMenuTheme(qContextMenu, sourceItem) {
+  const read = (style, prop, fallback) => {
+    const value = style?.getPropertyValue?.(prop);
+    return value && value.trim() ? value.trim() : fallback;
+  };
+  const readDirect = (style, prop, fallback) => {
+    const value = style?.[prop];
+    return value && String(value).trim() ? String(value).trim() : fallback;
+  };
+  try {
+    const menuStyle = qContextMenu ? getComputedStyle(qContextMenu) : null;
+    const itemStyle = sourceItem ? getComputedStyle(sourceItem) : null;
+    const itemHeight = readDirect(itemStyle, "height", "");
+    const paddingTop = readDirect(itemStyle, "paddingTop", "");
+    const paddingRight = readDirect(itemStyle, "paddingRight", "");
+    const paddingBottom = readDirect(itemStyle, "paddingBottom", "");
+    const paddingLeft = readDirect(itemStyle, "paddingLeft", "");
+    const itemPadding = paddingTop && paddingRight && paddingBottom && paddingLeft
+      ? `${paddingTop} ${paddingRight} ${paddingBottom} ${paddingLeft}`
+      : "6px 12px";
+    return {
+      bg: lePickQQNTMenuBackground(menuStyle, itemStyle),
+      color: readDirect(menuStyle, "color", "var(--text_primary,#e5e7eb)"),
+      border: readDirect(menuStyle, "border", "1px solid rgba(255,255,255,.10)"),
+      radius: readDirect(menuStyle, "borderRadius", "8px"),
+      shadow: readDirect(menuStyle, "boxShadow", "0 14px 34px rgba(0,0,0,.34)"),
+      fontFamily: readDirect(itemStyle, "fontFamily", readDirect(menuStyle, "fontFamily", "inherit")),
+      fontSize: readDirect(itemStyle, "fontSize", readDirect(menuStyle, "fontSize", "14px")),
+      lineHeight: readDirect(itemStyle, "lineHeight", readDirect(menuStyle, "lineHeight", "20px")),
+      minWidth: readDirect(menuStyle, "minWidth", "168px"),
+      itemHeight: itemHeight && itemHeight !== "auto" ? itemHeight : "32px",
+      itemPadding,
+      scrollPadding: read(menuStyle, "--le-menu-scroll-padding", "4px 0"),
+      scrollbarThumb: read(menuStyle, "--le-menu-scrollbar-thumb", "rgba(255,255,255,.18)"),
+      scrollbarThumbHover: read(menuStyle, "--le-menu-scrollbar-thumb-hover", "rgba(255,255,255,.28)"),
+    };
+  } catch (_) {
+    return {
+      bg: "var(--bg_transparent,var(--bg_primary,var(--bg_secondary,#242424)))",
+      color: "var(--text_primary,#e5e7eb)",
+      border: "1px solid rgba(255,255,255,.10)",
+      radius: "8px",
+      shadow: "0 14px 34px rgba(0,0,0,.34)",
+      fontFamily: "inherit",
+      fontSize: "14px",
+      lineHeight: "20px",
+      minWidth: "168px",
+      itemHeight: "32px",
+      itemPadding: "6px 12px",
+      scrollPadding: "4px 0",
+      scrollbarThumb: "rgba(255,255,255,.18)",
+      scrollbarThumbHover: "rgba(255,255,255,.28)",
+    };
+  }
+}
+
+function leApplyQQNTMenuTheme(menuEl, theme) {
+  if (!menuEl || !theme) return;
+  const setVar = (name, value) => {
+    if (value) menuEl.style.setProperty(name, value);
+  };
+  setVar("--le-menu-bg", theme.bg);
+  setVar("--le-menu-color", theme.color);
+  setVar("--le-menu-border", theme.border);
+  setVar("--le-menu-radius", theme.radius);
+  setVar("--le-menu-shadow", theme.shadow);
+  setVar("--le-menu-font-family", theme.fontFamily);
+  setVar("--le-menu-font-size", theme.fontSize);
+  setVar("--le-menu-line-height", theme.lineHeight);
+  setVar("--le-menu-min-width", theme.minWidth);
+  setVar("--le-menu-item-height", theme.itemHeight);
+  setVar("--le-menu-item-padding", theme.itemPadding);
+  setVar("--le-menu-scroll-padding", theme.scrollPadding);
+  setVar("--le-menu-scrollbar-thumb", theme.scrollbarThumb);
+  setVar("--le-menu-scrollbar-thumb-hover", theme.scrollbarThumbHover);
+}
+
+function leHandleSubMenuWheel(scrollEl, event) {
+  if (!scrollEl || !event || event.__leContextWheelHandled) return;
+  event.__leContextWheelHandled = true;
+  const rawDelta = Number(event.deltaY || event.deltaX || 0);
+  const mode = Number(event.deltaMode || 0);
+  const unit = mode === 1 ? 16 : (mode === 2 ? Math.max(scrollEl.clientHeight || 0, 160) : 1);
+  const delta = rawDelta * unit;
+  const maxTop = Math.max(0, (scrollEl.scrollHeight || 0) - (scrollEl.clientHeight || 0));
+  const nextTop = Math.max(0, Math.min(maxTop, (scrollEl.scrollTop || 0) + delta));
+  if (Number.isFinite(nextTop)) scrollEl.scrollTop = nextTop;
+  event.preventDefault?.();
+  event.stopPropagation?.();
+  event.stopImmediatePropagation?.();
+}
+
+function leOpenContextSubMenu(menuEl, anchorEl) {
+  if (!menuEl || !anchorEl || !anchorEl.getBoundingClientRect) return;
+  const rect = anchorEl.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const gap = 2;
+  const level = Number(menuEl.getAttribute("data-level") || "0") || 0;
+  menuEl.classList.add("show");
+  menuEl.style.zIndex = String(2147483647 + level);
+  menuEl.style.visibility = "hidden";
+  const menuWidth = Math.max(menuEl.offsetWidth || 180, 168);
+  const maxMenuHeight = leComputeSubMenuMaxHeight(rect, viewportHeight);
+  menuEl.style.setProperty("--le-sub-menu-max-height", `${maxMenuHeight}px`);
+  const scrollEl = menuEl.querySelector(".le-sub-scroll");
+  const contentHeight = Math.max(scrollEl?.scrollHeight || menuEl.scrollHeight || menuEl.offsetHeight || 80, 48);
+  const menuHeight = Math.min(contentHeight, maxMenuHeight);
+  let left = rect.right + gap;
+  if (viewportWidth && left + menuWidth > viewportWidth - 4) left = rect.left - menuWidth - gap;
+  const pos = leClampContextMenuPosition(left, rect.top, menuWidth, menuHeight);
+  menuEl.style.setProperty("--top", `${pos.top}px`);
+  menuEl.style.setProperty("--left", `${pos.left}px`);
+  menuEl.style.visibility = "";
+}
+
+function leOpenSubMenuFromAnchor(menuEl, anchorEl) {
+  leOpenContextSubMenu(menuEl, anchorEl);
+}
+
+function lePointInsideElement(x, y, el) {
+  if (!el || !el.getBoundingClientRect) return false;
+  const rect = el.getBoundingClientRect();
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function leCreateContextSubMenu(parentEl, menuItems, callback, level = 0, theme = null) {
+  const subMenuEl = document.createElement("div");
+  const scrollEl = document.createElement("div");
+  const menuId = `le-submenu-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  scrollEl.classList.add("le-sub-scroll");
+  subMenuEl.appendChild(scrollEl);
+  subMenuEl.classList.add("le-sub-context-menu", `level-${level}`);
+  leApplyQQNTMenuTheme(subMenuEl, theme);
+  subMenuEl.setAttribute("data-menu-id", menuId);
+  subMenuEl.setAttribute("data-level", String(level));
+  parentEl.setAttribute("data-submenu-id", menuId);
+  subMenuEl.style.setProperty("--top", "0px");
+  subMenuEl.style.setProperty("--left", "0px");
+
+  const keepOpenChain = () => {
+    leClearSubMenuTimer(menuId);
+    let current = parentEl;
+    while (current) {
+      const submenuId = current.getAttribute?.("data-submenu-id");
+      if (submenuId) {
+        leClearSubMenuTimer(submenuId);
+        const submenu = document.querySelector(`[data-menu-id="${submenuId}"]`);
+        if (submenu) submenu.classList.add("show");
+      }
+      const parentMenu = current.closest?.(".le-sub-context-menu");
+      current = parentMenu ? document.querySelector(`[data-submenu-id="${parentMenu.getAttribute("data-menu-id")}"]`) : null;
+    }
+  };
+
+  const closeSiblingChildren = (activeItem) => {
+    const siblings = activeItem?.parentElement?.children || [];
+    for (const sibling of siblings) {
+      if (sibling === activeItem) continue;
+      const siblingMenuId = sibling.getAttribute?.("data-submenu-id");
+      const siblingMenu = siblingMenuId ? document.querySelector(`[data-menu-id="${siblingMenuId}"]`) : null;
+      if (siblingMenu) {
+        leClearSubMenuTimer(siblingMenuId);
+        siblingMenu.classList.remove("show");
+        siblingMenu.querySelectorAll(".le-sub-context-menu").forEach((child) => child.classList.remove("show"));
+      }
+    }
+  };
+
+  const openMenuAt = (event) => {
+    leRecordContextPointer(event);
+    keepOpenChain();
+    leOpenContextSubMenu(subMenuEl, parentEl);
+    event?.stopPropagation?.();
+  };
+  const handleSubMenuWheel = (event) => {
+    const target = event?.target;
+    if (!target || !subMenuEl.contains(target)) return;
+    leHandleSubMenuWheel(scrollEl, event);
+  };
+
+  subMenuEl.addEventListener("mouseenter", openMenuAt);
+  subMenuEl.addEventListener("pointerenter", openMenuAt);
+  subMenuEl.addEventListener("mousemove", openMenuAt);
+  subMenuEl.addEventListener("pointermove", openMenuAt);
+  subMenuEl.addEventListener("wheel", handleSubMenuWheel, { capture: true, passive: false });
+  document.addEventListener("wheel", handleSubMenuWheel, { capture: true, passive: false });
+
+  subMenuEl.addEventListener("mouseleave", (event) => {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget && parentEl.contains(relatedTarget)) return;
+    for (const childMenu of document.querySelectorAll(".le-sub-context-menu")) {
+      if (relatedTarget && childMenu.contains(relatedTarget)) return;
+    }
+    leSetSubMenuCloseTimer(menuId, subMenuEl);
+  });
+
+  scrollEl.addEventListener("wheel", (event) => {
+    leHandleSubMenuWheel(scrollEl, event);
+  }, { capture: true, passive: false });
+
+  (Array.isArray(menuItems) ? menuItems : []).forEach((menuData) => {
+    const subMenuItemEl = document.createElement("div");
+    const textSpan = document.createElement("span");
+    const children = Array.isArray(menuData?.children) ? menuData.children : [];
+    subMenuItemEl.classList.add("le-sub-item");
+    textSpan.textContent = menuData?.name || menuData?.relativeDir || menuData?.path || "";
+    textSpan.style.flexGrow = "1";
+    subMenuItemEl.appendChild(textSpan);
+    subMenuItemEl.menuData = menuData;
+    subMenuItemEl.addEventListener("mouseenter", () => closeSiblingChildren(subMenuItemEl));
+    subMenuItemEl.addEventListener("mousemove", () => closeSiblingChildren(subMenuItemEl));
+    subMenuItemEl.addEventListener("pointermove", () => closeSiblingChildren(subMenuItemEl));
+
+    if (children.length > 0) {
+      subMenuItemEl.classList.add("has-submenu");
+      const arrowSpan = document.createElement("span");
+      arrowSpan.className = "le-sub-arrow";
+      arrowSpan.textContent = ">";
+      subMenuItemEl.appendChild(arrowSpan);
+      const childSubMenu = leCreateContextSubMenu(subMenuItemEl, children, callback, level + 1, theme);
+      const openChildMenu = (event) => {
+        leRecordContextPointer(event);
+        closeSiblingChildren(subMenuItemEl);
+        const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
+        leClearSubMenuTimer(childMenuId);
+        if (typeof childSubMenu.__leOpenFromAnchor === "function") childSubMenu.__leOpenFromAnchor(event.currentTarget);
+      };
+      subMenuItemEl.addEventListener("mouseenter", openChildMenu);
+      subMenuItemEl.addEventListener("pointerenter", openChildMenu);
+      subMenuItemEl.addEventListener("mousemove", openChildMenu);
+      subMenuItemEl.addEventListener("pointermove", openChildMenu);
+      subMenuItemEl.addEventListener("mouseleave", (event) => {
+        const relatedTarget = event.relatedTarget;
+        const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
+        const childMenu = document.querySelector(`[data-menu-id="${childMenuId}"]`);
+        if (relatedTarget && childMenu && childMenu.contains(relatedTarget)) return;
+        if (childMenu) leSetSubMenuCloseTimer(childMenuId, childMenu);
+      });
+    }
+
+    leBindContextActivate(subMenuItemEl, (event) => {
+      event.stopPropagation();
+      callback(event, menuData);
+      leClearAllSubMenuTimers();
+      leRemoveAllSubMenus();
+      document.querySelector(".q-context-menu")?.remove();
+    });
+    scrollEl.appendChild(subMenuItemEl);
+  });
+
+  const openFromParent = (event) => {
+    leRecordContextPointer(event);
+    leOpenContextSubMenu(subMenuEl, event?.currentTarget || parentEl);
+  };
+  function leOpenIfPointerOverAnchor() {
+    try { if (parentEl.matches(":hover")) leOpenContextSubMenu(subMenuEl, parentEl); } catch (_) {}
+    if (!leContextPointerState.ts || Date.now() - leContextPointerState.ts > 5000) return;
+    if (lePointInsideElement(leContextPointerState.x, leContextPointerState.y, parentEl)) {
+      leOpenContextSubMenu(subMenuEl, parentEl);
+    }
+  }
+  const openFromPointer = (event) => {
+    leRecordContextPointer(event);
+    leOpenIfPointerOverAnchor();
+  };
+  const closeOnOutsidePointer = (event) => {
+    const target = event?.target;
+    const rootMenu = parentEl.closest?.(".q-context-menu");
+    if (target && (parentEl.contains(target) || subMenuEl.contains(target) || rootMenu?.contains(target))) return;
+    leRemoveAllSubMenus();
+  };
+  const closeOnEscape = (event) => {
+    if (event?.key === "Escape") leRemoveAllSubMenus();
+  };
+
+  parentEl.addEventListener("mouseenter", openFromParent);
+  parentEl.addEventListener("mouseover", openFromParent);
+  parentEl.addEventListener("pointerenter", openFromParent);
+  parentEl.addEventListener("mousemove", openFromParent);
+  parentEl.addEventListener("pointermove", openFromParent);
+  parentEl.addEventListener("mouseleave", (event) => {
+    const relatedTarget = event.relatedTarget;
+    const submenu = document.querySelector(`[data-menu-id="${menuId}"]`);
+    if (relatedTarget && submenu && submenu.contains(relatedTarget)) return;
+    leSetSubMenuCloseTimer(menuId, subMenuEl);
+  });
+  document.addEventListener("pointermove", openFromPointer, true);
+  document.addEventListener("mousemove", openFromPointer, true);
+  if (level === 0) {
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+  }
+  subMenuEl.__leOpenFromAnchor = (anchorEl = parentEl) => {
+    leClearSubMenuTimer(menuId);
+    leOpenContextSubMenu(subMenuEl, anchorEl);
+  };
+  subMenuEl.__leCleanup = () => {
+    document.removeEventListener("pointermove", openFromPointer, true);
+    document.removeEventListener("mousemove", openFromPointer, true);
+    document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.removeEventListener("keydown", closeOnEscape, true);
+    document.removeEventListener("wheel", handleSubMenuWheel, { capture: true });
+  };
+  document.body.appendChild(subMenuEl);
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(leOpenIfPointerOverAnchor);
+  setTimeout(leOpenIfPointerOverAnchor, 80);
+  return subMenuEl;
+}
+
 function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
   const subMenuEl = document.createElement("div");
   const scrollEl = document.createElement("div");
@@ -3675,9 +4567,31 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
     leSubMenuTimers.set(id, timer);
   };
 
-  const openMenuAt = (event) => {
+  function lePositionSubMenuFromAnchor(anchorEl) {
+    if (!anchorEl || !anchorEl.getBoundingClientRect) return;
+    const rect = anchorEl.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const menuWidth = Math.max(subMenuEl.offsetWidth || 180, 160);
+    const menuHeight = Math.min(Math.max(subMenuEl.offsetHeight || 80, 80), 260);
+    const gap = 2;
+    let left = rect.x + rect.width + gap;
+    if (viewportWidth && left + menuWidth > viewportWidth - 4) left = Math.max(4, rect.x - menuWidth - gap);
+    let top = rect.y;
+    if (viewportHeight && top + menuHeight > viewportHeight - 4) top = Math.max(4, viewportHeight - menuHeight - 4);
+    subMenuEl.style.setProperty("--top", `${top}px`);
+    subMenuEl.style.setProperty("--left", `${left}px`);
+  }
+
+  function leOpenSubMenuFromAnchor(anchorEl = parentEl) {
     clearMenuTimer(menuId);
     subMenuEl.classList.add("show");
+    subMenuEl.style.zIndex = "2147483647";
+    lePositionSubMenuFromAnchor(anchorEl);
+  }
+
+  const openMenuAt = (event) => {
+    leOpenSubMenuFromAnchor(parentEl);
     let currentEl = parentEl;
     while (currentEl) {
       const currentSubmenuId = currentEl.getAttribute("data-submenu-id");
@@ -3702,11 +4616,7 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
         currentEl = null;
       }
     }
-    if (event && event.currentTarget && event.currentTarget.getBoundingClientRect) {
-      const rect = event.currentTarget.getBoundingClientRect();
-      subMenuEl.style.setProperty("--top", `${rect.y}px`);
-      subMenuEl.style.setProperty("--left", `${rect.x + rect.width}px`);
-    }
+    event?.stopPropagation?.();
   };
 
   subMenuEl.addEventListener("mouseenter", openMenuAt);
@@ -3753,10 +4663,7 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
       const openChildMenu = (event) => {
         const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
         clearMenuTimer(childMenuId);
-        const rect = event.currentTarget.getBoundingClientRect();
-        childSubMenu.classList.add("show");
-        childSubMenu.style.setProperty("--top", `${rect.y}px`);
-        childSubMenu.style.setProperty("--left", `${rect.x + rect.width}px`);
+        if (typeof childSubMenu.__leOpenFromAnchor === "function") childSubMenu.__leOpenFromAnchor(event.currentTarget);
       };
       subMenuItemEl.addEventListener("mouseenter", openChildMenu);
       subMenuItemEl.addEventListener("pointerenter", openChildMenu);
@@ -3773,22 +4680,32 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
       event.stopPropagation();
       callback(event, menuData);
       leSubMenuTimers.clear();
-      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      leRemoveAllSubMenus();
       document.querySelector(".q-context-menu")?.remove();
     });
     scrollEl.appendChild(subMenuItemEl);
   });
 
   const openFromParent = (event) => {
-    clearMenuTimer(menuId);
-    const rect = event.currentTarget.getBoundingClientRect();
-    subMenuEl.classList.add("show");
-    subMenuEl.style.setProperty("--top", `${rect.y}px`);
-    subMenuEl.style.setProperty("--left", `${rect.x + rect.width}px`);
+    leOpenSubMenuFromAnchor(event?.currentTarget || parentEl);
+  };
+  const openFromPointer = (event) => {
+    if (!event || typeof event.clientX !== "number" || typeof event.clientY !== "number") return;
+    const rect = parentEl.getBoundingClientRect();
+    if (
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom
+    ) {
+      leOpenSubMenuFromAnchor(parentEl);
+    }
   };
   parentEl.addEventListener("mouseenter", openFromParent);
+  parentEl.addEventListener("mouseover", openFromParent);
   parentEl.addEventListener("pointerenter", openFromParent);
   parentEl.addEventListener("mousemove", openFromParent);
+  parentEl.addEventListener("pointermove", openFromParent);
   parentEl.addEventListener("mouseleave", (event) => {
     const relatedTarget = event.relatedTarget;
     const submenuId = parentEl.getAttribute("data-submenu-id");
@@ -3796,7 +4713,19 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
     if (relatedTarget && submenu && submenu.contains(relatedTarget)) return;
     setCloseTimer(menuId, subMenuEl);
   });
+  document.addEventListener("pointermove", openFromPointer, true);
+  document.addEventListener("mousemove", openFromPointer, true);
+  subMenuEl.__leOpenFromAnchor = leOpenSubMenuFromAnchor;
+  subMenuEl.__leCleanup = () => {
+    document.removeEventListener("pointermove", openFromPointer, true);
+    document.removeEventListener("mousemove", openFromPointer, true);
+  };
   document.body.appendChild(subMenuEl);
+  const openIfHovered = () => {
+    try { if (parentEl.matches(":hover")) leOpenSubMenuFromAnchor(parentEl); } catch (_) {}
+  };
+  requestAnimationFrame(openIfHovered);
+  setTimeout(openIfHovered, 80);
   return subMenuEl;
 }
 
@@ -3863,38 +4792,105 @@ function leBindContextActivate(el, handler) {
   el.addEventListener("click", onActivate, true);
 }
 
-function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMainClick = false) {
-  const contextItem = qContextMenu.querySelector(`:scope > :not(.menu-stickers-wrapper,[disabled="true"])`)?.cloneNode(true) ??
-    qContextMenu.querySelector(`.q-context-menu-item:not([disabled="true"])`)?.cloneNode(true);
-  if (!contextItem) return;
+function leCreateContextItemFallback(title) {
+  const item = document.createElement("div");
+  const textEl = document.createElement("span");
+  item.className = "q-context-menu-item q-context-menu-item--normal le-context-item";
+  item.setAttribute("role", "menuitem");
+  textEl.className = "q-context-menu-item__text";
+  textEl.textContent = title;
+  item.appendChild(textEl);
+  return item;
+}
+
+function leStripQQNTContextState(root) {
+  if (!root) return;
+  const nodes = [root, ...Array.from(root.querySelectorAll?.("*") || [])];
+  nodes.forEach((node) => {
+    try { node.removeAttribute("id"); } catch (_) {}
+    try { node.removeAttribute("href"); } catch (_) {}
+    try { node.removeAttribute("target"); } catch (_) {}
+    try { node.removeAttribute("disabled"); } catch (_) {}
+    try { node.removeAttribute("aria-controls"); } catch (_) {}
+    try { node.removeAttribute("aria-expanded"); } catch (_) {}
+    try { node.removeAttribute("data-submenu-id"); } catch (_) {}
+    try { node.removeAttribute("data-menu-id"); } catch (_) {}
+    try {
+      for (const attr of Array.from(node.attributes || [])) {
+        const name = String(attr.name || "").toLowerCase();
+        if (name.startsWith("bf-") || name.startsWith("data-bf-")) node.removeAttribute(attr.name);
+      }
+    } catch (_) {}
+    try {
+      for (const className of Array.from(node.classList || [])) {
+        if (
+          className.startsWith("bf-") ||
+          className === "lite-tools-vue-component" ||
+          className === "vue-component" ||
+          className === "sub-context-menu-item" ||
+          className === "le-context-item" ||
+          className === "le-sub-item" ||
+          className === "has-submenu"
+        ) {
+          node.classList.remove(className);
+        }
+      }
+    } catch (_) {}
+  });
+}
+
+function leCreateCleanContextItem(sourceItem, title) {
+  const contextItem = sourceItem ? sourceItem.cloneNode(true) : leCreateContextItemFallback(title);
+  leStripQQNTContextState(contextItem);
   contextItem.classList.add("le-context-item");
-  
-  // Clean up styles
+  if (!contextItem.classList.contains("q-context-menu-item")) contextItem.classList.add("q-context-menu-item");
+  if (!contextItem.classList.contains("q-context-menu-item--normal")) contextItem.classList.add("q-context-menu-item--normal");
+  contextItem.setAttribute("data-le-context-item-id", `le-context-item-${++leContextItemSeq}`);
+  contextItem.setAttribute("role", contextItem.getAttribute("role") || "menuitem");
   contextItem.style.removeProperty("color");
-  
-  if (contextItem.classList.contains("q-context-menu-item__text")) contextItem.innerText = title;
-  else {
-    const textEl = contextItem.querySelector(".q-context-menu-item__text");
-    if (textEl) textEl.innerText = title;
+  contextItem.style.cursor = "pointer";
+  contextItem.querySelectorAll(".lite-tools-context-next-icon,.le-context-next-icon").forEach((el) => el.remove());
+
+  let textEl = contextItem.classList.contains("q-context-menu-item__text")
+    ? contextItem
+    : contextItem.querySelector(".q-context-menu-item__text");
+  if (!textEl) {
+    textEl = document.createElement("span");
+    textEl.className = "q-context-menu-item__text";
+    contextItem.appendChild(textEl);
   }
+  textEl.textContent = title;
+  return contextItem;
+}
+
+function leAppendContextSubMenuIcon(contextItem) {
+  if (!contextItem || contextItem.querySelector(".le-context-next-icon")) return;
+  const icon = document.createElement("div");
+  icon.className = "q-context-menu-item__icon icon_next lite-tools-context-next-icon le-context-next-icon";
+  icon.innerHTML = '<i class="q-icon"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.6953 3L10.7993 8.10522L5.6953 13.2104L5 12.5161L9.4098 8.10522L5 3.69439L5.6953 3Z"></path></svg></i>';
+  contextItem.appendChild(icon);
+}
+
+function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMainClick = false) {
+  const sourceItem = qContextMenu.querySelector(`:scope > .q-context-menu-item:not([disabled="true"])`) ??
+    qContextMenu.querySelector(`.q-context-menu-item:not([disabled="true"])`);
+  const contextItem = leCreateCleanContextItem(sourceItem, title);
+  if (!contextItem) return;
+  const theme = leReadQQNTMenuTheme(qContextMenu, sourceItem);
   
   let hasSubMenu = false;
   if (Array.isArray(subMenuList) && subMenuList.length) {
     hasSubMenu = true;
-    // Add arrow icon if text element exists
-    if (contextItem.querySelector(".q-context-menu-item__text")) {
-      const subMenuIconEl = `<div class="q-context-menu-item__icon icon_next lite-tools-context-next-icon"><i class="q-icon"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.6953 3L10.7993 8.10522L5.6953 13.2104L5 12.5161L9.4098 8.10522L5 3.69439L5.6953 3Z"></path></svg></i></div>`;
-      contextItem.insertAdjacentHTML("beforeend", subMenuIconEl);
-    }
-    const tree = leBuildFolderTree(subMenuList);
-    leCreateNestedSubMenu(contextItem, tree, callback, 0);
+    leAppendContextSubMenuIcon(contextItem);
+    const tree = subMenuList.some((item) => Array.isArray(item?.children)) ? subMenuList : leBuildFolderTree(subMenuList);
+    leCreateContextSubMenu(contextItem, tree, callback, 0, theme);
   } else if (typeof callback === "function") {
     // No submenu, always click
     leBindContextActivate(contextItem, (event) => {
       event.stopPropagation();
       callback(event);
-      leSubMenuTimers.clear();
-      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      leClearAllSubMenuTimers();
+      leRemoveAllSubMenus();
       qContextMenu.remove();
     });
     qContextMenu.appendChild(contextItem);
@@ -3906,8 +4902,8 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
     leBindContextActivate(contextItem, (e) => {
       e.stopPropagation();
       callback(e);
-      leSubMenuTimers.clear();
-      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      leClearAllSubMenuTimers();
+      leRemoveAllSubMenus();
       qContextMenu.remove();
     });
   }
@@ -3977,31 +4973,142 @@ function leGetImagePathFromSrc(src) {
   return src;
 }
 
+function leContextReasonText(reason) {
+  const map = {
+    root_dir_missing: "请先在设置页选择本地表情目录",
+    target_outside_root: "目标目录不在本地表情目录内",
+    source_missing: "找不到图片文件",
+    unsupported_source: "当前图片来源不支持保存",
+    fetch_failed: "图片读取失败",
+    bad_size: "图片为空或超过 20MB",
+    bad_magic: "不是有效图片文件",
+    bad_ext: "不支持的图片格式",
+    write_failed: "写入文件失败",
+  };
+  return map[reason] || reason || "未知错误";
+}
+
+function leNormalizeContextSource(source) {
+  try {
+    if (window.localEmote?.normalizeContextImageSource) {
+      return window.localEmote.normalizeContextImageSource(source);
+    }
+  } catch (_) {}
+  const p = leGetImagePathFromSrc(source);
+  if (p) return { kind: "file", source: p, fileName: p.split(/[\\/]/).pop() || "", mime: "" };
+  return { kind: "unsupported", source, reason: "unsupported_source" };
+}
+
+function leExtractCssUrl(value) {
+  const raw = String(value || "");
+  const match = raw.match(/url\((['"]?)(.*?)\1\)/i);
+  return match ? match[2] : "";
+}
+
+function leCollectImageCandidates(el) {
+  const out = [];
+  if (!el || el.nodeType !== 1) return out;
+  const push = (value) => { if (value && typeof value === "string") out.push(value); };
+  if (el.tagName === "IMG") {
+    push(el.currentSrc);
+    push(el.src);
+  }
+  const attrs = [
+    "src",
+    "href",
+    "data-src",
+    "data-original",
+    "data-origin",
+    "data-src-original",
+    "data-url",
+    "data-thumb",
+    "data-image",
+    "data-file",
+    "data-path",
+    "origin-src",
+  ];
+  for (const attr of attrs) {
+    try { push(el.getAttribute?.(attr)); } catch (_) {}
+  }
+  try { push(leExtractCssUrl(getComputedStyle(el).backgroundImage)); } catch (_) {}
+  return out;
+}
+
+function leFindContextImageSource(event) {
+  const pathList = event?.composedPath ? event.composedPath() : [];
+  const candidates = [];
+  for (const el of pathList) candidates.push(...leCollectImageCandidates(el));
+  const target = event?.target;
+  const img = target && (target.tagName === "IMG" ? target : (target.closest ? target.closest("img") : null));
+  if (img) candidates.push(...leCollectImageCandidates(img));
+  for (const candidate of candidates) {
+    const normalized = leNormalizeContextSource(candidate);
+    if (normalized && normalized.kind !== "unsupported") return candidate;
+  }
+  return "";
+}
+
+async function leBuildContextImagePayload(source, targetDir) {
+  const normalized = leNormalizeContextSource(source);
+  if (!normalized || normalized.kind === "unsupported") {
+    return { ok: false, reason: normalized?.reason || "unsupported_source" };
+  }
+  if (normalized.kind === "file") {
+    return {
+      ok: true,
+      payload: {
+        kind: "file",
+        path: normalized.source,
+        fileName: normalized.fileName,
+        mime: normalized.mime || "",
+        targetDir,
+      },
+    };
+  }
+  if (normalized.kind === "data" || normalized.kind === "remote") {
+    try {
+      const res = await fetch(normalized.source, { credentials: "include" });
+      if (!res || (typeof res.ok === "boolean" && !res.ok)) return { ok: false, reason: "fetch_failed" };
+      const blob = await res.blob();
+      const bytes = await blob.arrayBuffer();
+      return {
+        ok: true,
+        payload: {
+          kind: "bytes",
+          bytes,
+          fileName: normalized.fileName || "context-image",
+          mime: normalized.mime || blob.type || res.headers?.get?.("content-type") || "",
+          targetDir,
+        },
+      };
+    } catch (_) {
+      return { ok: false, reason: "fetch_failed" };
+    }
+  }
+  return { ok: false, reason: "unsupported_source" };
+}
+
+async function leRefreshAfterContextSave() {
+  try { await window.localEmote?.refreshLibraryIndex?.(); } catch (_) {}
+  try { await overlayInstance?.refresh?.(); } catch (_) {}
+}
+
 function leInstallImageContextMenu() {
   if (window.__le_image_context_menu_installed) return;
   window.__le_image_context_menu_installed = true;
   leEnsureContextMenuStyle();
   document.addEventListener("contextmenu", (e) => {
     try {
+      leRecordContextPointer(e);
       const cfg = window.localEmote?.getConfig?.();
       if (!cfg || cfg.imageContextMenu === false) return;
-      const target = e.target;
-      const img = target && (target.tagName === "IMG" ? target : (target.closest ? target.closest("img") : null));
-      if (!img) { 
-        // try to find in message container if not directly img
-        // but for now just return
-        leContextMenuState.lastImagePath = ""; 
-        return; 
+      const src = leFindContextImageSource(e);
+      try { dbg('contextmenu: image source detected', { src: src ? src.slice(0, 80) : '' }); } catch (_) {}
+      if (!src) {
+        leContextMenuState.lastImageSource = "";
+        return;
       }
-      const src = img.currentSrc || img.src || img.getAttribute?.("data-src") || img.getAttribute?.("data-original") || img.getAttribute?.("data-origin") || img.getAttribute?.("data-src-original") || "";
-      const path = leGetImagePathFromSrc(src);
-      try { dbg('contextmenu: img detected', { src: src ? src.slice(0, 50) : '', path, tagName: img.tagName }); } catch (_) {}
-      
-      if (!path) { 
-        leContextMenuState.lastImagePath = ""; 
-        return; 
-      }
-      leContextMenuState.lastImagePath = path;
+      leContextMenuState.lastImageSource = src;
       leContextMenuState.lastTs = Date.now();
     } catch (e) {
       try { dbg('contextmenu error', e); } catch (_) {}
@@ -4009,17 +5116,23 @@ function leInstallImageContextMenu() {
   }, true);
   const moCtx = new MutationObserver(() => {
     try {
+      const activeQContextMenu = document.querySelector(".q-context-menu");
+      if (!activeQContextMenu) {
+        leRemoveAllSubMenus();
+        return;
+      }
       const qContextMenu = document.querySelector(".q-context-menu:not(.le-context-menu)");
-    if (!qContextMenu) {
-      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
-      return;
-    }
+    if (!qContextMenu) return;
     qContextMenu.classList.add("le-context-menu");
     const cfg = window.localEmote?.getConfig?.();
     if (!cfg || cfg.imageContextMenu === false) return;
-    if (!leContextMenuState.lastImagePath || Date.now() - leContextMenuState.lastTs > 1500) return;
+    if (!leContextMenuState.lastImageSource || Date.now() - leContextMenuState.lastTs > 1500) return;
     if (qContextMenu.querySelector(".le-context-item")) return;
     const listPromise = (async () => {
+      if (window.localEmote?.getContextSaveTargets) {
+        const targets = await window.localEmote.getContextSaveTargets();
+        return Array.isArray(targets) ? targets : [];
+      }
       const cfg = window.localEmote?.getConfig?.();
       const rootDir = cfg?.rootDir;
       let packs = [];
@@ -4041,6 +5154,46 @@ function leInstallImageContextMenu() {
     })();
       if (!listPromise || typeof listPromise.then !== "function") return;
       listPromise.then((subMenuList) => {
+        leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
+          try {
+            const target = data || subMenuList?.[0];
+            const src = leContextMenuState.lastImageSource;
+            const targetDir = target?.dir || (target?.path && String(target.path).startsWith("__dir__|") ? String(target.path).slice("__dir__|".length) : "");
+            if (!src) {
+              leShowToast("保存失败: 找不到图片来源", "error");
+              return;
+            }
+            if (!targetDir) {
+              leShowToast("保存失败: " + leContextReasonText("root_dir_missing"), "error");
+              return;
+            }
+            const built = await leBuildContextImagePayload(src, targetDir);
+            if (!built.ok) {
+              leShowToast("保存失败: " + leContextReasonText(built.reason), "error");
+              return;
+            }
+            try {
+              const cfg = window.localEmote?.getConfig?.();
+              if (cfg) {
+                cfg.lastCategory = "__dir__|" + targetDir;
+                window.localEmote.setConfig(cfg);
+              }
+            } catch (_) {}
+            const res = await window.localEmote.saveContextImage(built.payload);
+            dbg('contextmenu: save result', res);
+            if (!res || !res.ok) {
+              leShowToast("保存失败: " + leContextReasonText(res?.reason), "error");
+              return;
+            }
+            await leRefreshAfterContextSave();
+            const label = target?.name || res.name || "";
+            leShowToast(label ? `保存成功: ${label}` : "保存成功", "success");
+          } catch (e) {
+            dbg('contextmenu: save handler error', e);
+            leShowToast("保存出错: " + (e?.message || "未知错误"), "error");
+          }
+        }, true);
+        return;
         leAddQContextMenu(qContextMenu, "保存到本地表情", subMenuList, async (_event, data) => {
           try {
             const src = leContextMenuState.lastImagePath;
@@ -4155,6 +5308,9 @@ export const onSettingWindowCreated = (view) => {
           const pinLimitApply = view.querySelector('.local_emotes .le-pin-limit-apply');
           const versionEl = view.querySelector('#le-settings-version');
           const openDataDirBtn = view.querySelector('#le-open-data-dir');
+          const diagnosticsEl = view.querySelector('#le-diagnostics');
+          const refreshLibraryBtn = view.querySelector('#le-refresh-library');
+          const refreshDiagnosticsBtn = view.querySelector('#le-refresh-diagnostics');
           const showNameSwitch = view.querySelector('#le-show-filename');
           const debugSwitch = view.querySelector('#le-debug');
           const imageContextSwitch = view.querySelector('#le-image-contextmenu');
@@ -4163,6 +5319,26 @@ export const onSettingWindowCreated = (view) => {
           if (versionEl) {
             try { versionEl.textContent = (LiteLoader.plugins?.["local_emotes"]?.manifest?.version) || ''; } catch (_) {}
           }
+          const renderDiagnostics = async (refresh = false) => {
+            if (!diagnosticsEl) return;
+            try {
+              const cfgNow = window.localEmote.getConfig();
+              const index = window.localEmote.getLibraryIndex ? await window.localEmote.getLibraryIndex(refresh) : null;
+              const caps = qqntAdapter.probeRuntimeCapabilities();
+              const parts = [
+                `目录：${cfgNow.rootDir || '未选择'}`,
+                `索引：${index?.packs?.length || 0} 个表情包 / ${index?.images?.length || 0} 张图片`,
+                `Hash：${index?.hash || '-'}`,
+                `发送模式：${cfgNow.sendMode}`,
+                `Adapter：nativeCall=${caps.nativeCall ? 'Y' : 'N'}，peer=${caps.peer ? 'Y' : 'N'}，image=${caps.imageMessage ? 'Y' : 'N'}，marketFace=${caps.marketFace ? 'Y' : 'N'}`,
+                `调试：${cfgNow.debug ? '开启' : '关闭'}`,
+              ];
+              diagnosticsEl.textContent = parts.join('；');
+            } catch (e) {
+              diagnosticsEl.textContent = '诊断刷新失败：' + (e?.message || e);
+            }
+          };
+          renderDiagnostics(false);
           if (dirInput) dirInput.value = cfg.rootDir || '未选择目录';
           // 已移除快速发送设置开关
           if (showNameSwitch) {
@@ -4230,6 +5406,14 @@ export const onSettingWindowCreated = (view) => {
           // 打开数据目录（两处按钮）
           if (btnOpenData) btnOpenData.addEventListener('click', () => { try { window.localEmote.openDataDir(); } catch (_) {} });
           if (openDataDirBtn) openDataDirBtn.addEventListener('click', () => { try { window.localEmote.openDataDir(); } catch (_) {} });
+          if (refreshLibraryBtn) refreshLibraryBtn.addEventListener('click', async () => {
+            try {
+              await window.localEmote.refreshLibraryIndex?.();
+              await renderDiagnostics(true);
+              await overlayInstance?.refresh?.();
+            } catch (_) {}
+          });
+          if (refreshDiagnosticsBtn) refreshDiagnosticsBtn.addEventListener('click', () => { renderDiagnostics(false); });
 
           // 热键设置
           if (hotkeyInput) {
@@ -4355,45 +5539,39 @@ export const onSettingWindowCreated = (view) => {
           const updateMode = (m) => {
             const c = window.localEmote.getConfig();
             c.sendMode = m;
-            window.localEmote.setConfig(c);
-            try { dbg('settings: sendMode set to', m); } catch (_) {}
-            setActive(m);
+            const ok = window.localEmote.setConfig(c);
+            let latest = c;
+            try { latest = ok && window.localEmote.getConfig ? window.localEmote.getConfig() : c; } catch (_) {}
+            const mode = latest && latest.sendMode ? latest.sendMode : m;
+            try { dbg('settings: sendMode set to', mode); } catch (_) {}
+            setActive(mode);
           };
-          if (btnMulti) btnMulti.addEventListener('click', () => updateMode('multi'));
-          if (btnSingle) btnSingle.addEventListener('click', () => updateMode('image'));
-          if (btnNative) btnNative.addEventListener('click', () => updateMode('native'));
-          // 兜底：使用事件委托，保证在某些自定义组件内部阻止冒泡时依然能工作
           if (sendModeWrap) {
+            const modeFromEvent = (e) => {
+              try {
+                const ids = {
+                  'le-send-mode-multi': 'multi',
+                  'le-send-mode-single': 'image',
+                  'le-send-mode-native': 'native',
+                };
+                const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+                for (const n of path) {
+                  if (n && n.id && ids[n.id]) return ids[n.id];
+                }
+                const el = e.target && e.target.closest ? e.target.closest('#le-send-mode-multi, #le-send-mode-single, #le-send-mode-native') : null;
+                return el && ids[el.id] ? ids[el.id] : '';
+              } catch (_) {
+                return '';
+              }
+            };
             sendModeWrap.addEventListener(
               'click',
               (e) => {
-                try {
-                  const el = e.target && (e.target.closest ? e.target.closest('#le-send-mode-multi, #le-send-mode-single, #le-send-mode-native') : null);
-                  if (!el) return;
-                  if (el.id === 'le-send-mode-multi') updateMode('multi');
-                  else if (el.id === 'le-send-mode-single') updateMode('image');
-                  else if (el.id === 'le-send-mode-native') updateMode('native');
-                } catch (_) {}
+                const mode = modeFromEvent(e);
+                if (mode) updateMode(mode);
               },
               true
             );
-          }
-          // 终极兜底：在整个 settings 视图上捕获 click，通过 composedPath 穿透 Shadow DOM
-          if (view && view.addEventListener) {
-            view.addEventListener('click', (e) => {
-              try {
-                const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-                let el = null;
-                for (const n of path) {
-                  if (!n || !n.id) continue;
-                  if (n.id === 'le-send-mode-multi' || n.id === 'le-send-mode-single' || n.id === 'le-send-mode-native') { el = n; break; }
-                }
-                if (!el) return;
-                if (el.id === 'le-send-mode-multi') updateMode('multi');
-                else if (el.id === 'le-send-mode-single') updateMode('image');
-                else if (el.id === 'le-send-mode-native') updateMode('native');
-              } catch (_) {}
-            }, true);
           }
         })
         .catch(() => tryLoad(idx + 1));

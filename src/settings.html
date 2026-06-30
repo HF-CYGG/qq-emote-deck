@@ -151,7 +151,7 @@
           <div class="ops-btns le-send-mode">
             <setting-button data-type="secondary" id="le-send-mode-multi">表情包多发</setting-button>
             <setting-button data-type="secondary" id="le-send-mode-single">图片发送</setting-button>
-            <setting-button data-type="secondary" id="le-send-mode-native">标准表情</setting-button>
+            <setting-button data-type="secondary" id="le-send-mode-native">标准表情（实验）</setting-button>
           </div>
         </setting-item>
 
@@ -236,6 +236,21 @@
   <setting-section data-title="关于">
     <setting-panel>
       <setting-list data-direction="column">
+        <setting-item data-direction="column">
+          <div>
+            <setting-text>运行诊断</setting-text>
+            <setting-text data-type="secondary" id="le-diagnostics" style="-webkit-line-clamp: initial">
+              尚未刷新诊断信息
+            </setting-text>
+            <div class="input-group">
+              <div class="ops-btns">
+                <setting-button data-type="secondary" id="le-refresh-library">刷新表情索引</setting-button>
+                <setting-button data-type="secondary" id="le-refresh-diagnostics">刷新诊断</setting-button>
+              </div>
+            </div>
+          </div>
+        </setting-item>
+
         <setting-item data-direction="row">
           <div>
             <setting-text>版本号</setting-text>

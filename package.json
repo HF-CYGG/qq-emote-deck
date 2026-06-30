@@ -2,8 +2,10 @@
   "name": "emote-deck",
   "version": "1.0.0",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "lint": "eslint \"src/**/*.js\"",
+    "test": "node --test tests/*.test.js",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
