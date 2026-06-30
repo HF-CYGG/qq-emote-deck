@@ -817,11 +817,19 @@ function injectLEStylesOnce() {
   #local-emote-overlay .le-card:hover { background: var(--le-hover-bg); }
   #local-emote-overlay .le-card.le-dragging {
     opacity: .58;
-    transform: scale(.96);
+    position: relative;
+    z-index: 20;
+    pointer-events: none;
+    transform: translate3d(var(--le-drag-x, 0px), var(--le-drag-y, 0px), 0) scale(.96);
+    transition: none;
     cursor: grabbing;
     will-change: transform, opacity;
   }
-  #local-emote-overlay .le-card.le-drag-over { box-shadow: inset 0 0 0 2px var(--le-primary); }
+  #local-emote-overlay .le-card.le-drag-over {
+    background: linear-gradient(0deg, rgba(59,130,246,.10), rgba(59,130,246,.10)), var(--le-hover-bg);
+    box-shadow: inset 0 0 0 1px var(--le-primary), 0 0 0 1px rgba(59,130,246,.18);
+  }
+  #local-emote-overlay .le-card.le-sort-animating { will-change: transform; }
   #local-emote-overlay .le-img {
     width: 64px; height: 64px; object-fit: contain;
     background: var(--le-input-bg); border: 1px solid var(--le-image-border); border-radius: 8px;
@@ -911,8 +919,12 @@ function injectLEStylesOnce() {
   #local-emote-overlay .le-pack { position: relative; width: 36px; height: 36px; border-radius: 999px; background: var(--le-input-bg); border: 1px solid var(--le-border); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .15s, background-color .15s, box-shadow .15s; touch-action: manipulation; }
   #local-emote-overlay .le-pack:hover { background: var(--le-hover-bg); }
   #local-emote-overlay .le-pack.active { box-shadow: inset 0 0 0 2px var(--le-primary); }
-  #local-emote-overlay .le-pack.le-dragging { opacity: .62; transform: scale(.9); cursor: grabbing; will-change: transform, opacity; }
-  #local-emote-overlay .le-pack.le-drag-over { box-shadow: inset 0 0 0 2px var(--le-primary); }
+  #local-emote-overlay .le-pack.le-dragging { opacity: .62; position: relative; z-index: 20; pointer-events: none; transform: translate3d(var(--le-drag-x, 0px), var(--le-drag-y, 0px), 0) scale(.9); transition: none; cursor: grabbing; will-change: transform, opacity; }
+  #local-emote-overlay .le-pack.le-drag-over {
+    background: linear-gradient(0deg, rgba(59,130,246,.12), rgba(59,130,246,.12)), var(--le-hover-bg);
+    box-shadow: inset 0 0 0 1px var(--le-primary), 0 0 0 1px rgba(59,130,246,.18);
+  }
+  #local-emote-overlay .le-pack.le-sort-animating { will-change: transform; }
   #local-emote-overlay .le-pack img { width: 28px; height: 28px; object-fit: cover; border-radius: 999px; }
   #local-emote-overlay .le-pack .le-pack-badge { position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px; border-radius: 999px; background: var(--le-primary); opacity: .85; }
 
@@ -2906,6 +2918,7 @@ function buildOverlay() {
 
   const LE_SORT_DRAG_THRESHOLD = 6;
   const LE_SORT_HOLD_DELAY = 180;
+  const LE_SORT_ANIMATION_MS = 150;
 
   function leNormalizeOrderPath(value) {
     if (typeof value !== 'string') return '';
@@ -2934,6 +2947,125 @@ function buildOverlay() {
     else if (ev.clientY > rect.bottom - edge) scrollEl.scrollTop += step;
   }
 
+  function lePrefersReducedMotion() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function leCaptureSortRects(container, selector) {
+    const rects = new Map();
+    if (!container) return rects;
+    for (const node of Array.from(container.querySelectorAll(selector))) {
+      try { rects.set(node, node.getBoundingClientRect()); } catch (_) {}
+    }
+    return rects;
+  }
+
+  function leCancelSortAnimations(nodes) {
+    for (const node of Array.isArray(nodes) ? nodes : []) {
+      if (!node) continue;
+      try {
+        if (node.__leSortAnimFrame) cancelAnimationFrame(node.__leSortAnimFrame);
+        if (node.__leSortAnimTimer) clearTimeout(node.__leSortAnimTimer);
+        node.__leSortAnimFrame = null;
+        node.__leSortAnimTimer = null;
+        node.classList.remove('le-sort-animating');
+        node.style.transition = '';
+        node.style.transform = '';
+      } catch (_) {}
+    }
+  }
+
+  function leAnimateSortReflow(container, selector, beforeRects, options = {}) {
+    if (!container || !beforeRects) return;
+    const nodes = Array.from(container.querySelectorAll(selector));
+    const dragItem = options.dragItem || null;
+    const duration = Number.isFinite(options.duration) ? Math.max(80, Math.floor(options.duration)) : LE_SORT_ANIMATION_MS;
+    if (lePrefersReducedMotion()) return;
+    if (typeof requestAnimationFrame !== 'function') return;
+    const movedNodes = [];
+    nodes.forEach((node) => {
+      if (node === dragItem) return;
+      const before = beforeRects.get(node);
+      if (!before) return;
+      const after = leMeasureSortSlotRect(node);
+      if (!after) return;
+      const dx = before.left - after.left;
+      const dy = before.top - after.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      movedNodes.push({ node, dx, dy });
+    });
+    leCancelSortAnimations(movedNodes.map((item) => item.node));
+    movedNodes.forEach(({ node, dx, dy }) => {
+      node.classList.add('le-sort-animating');
+      node.style.transition = '';
+      node.style.transform = `translate(${dx}px, ${dy}px)`;
+      node.__leSortAnimFrame = requestAnimationFrame(() => {
+        node.style.transition = `transform ${duration}ms cubic-bezier(.2,.8,.2,1)`;
+        node.style.transform = 'translate(0, 0)';
+      });
+      node.__leSortAnimTimer = window.setTimeout(() => {
+        try {
+          node.classList.remove('le-sort-animating');
+          node.style.transition = '';
+          node.style.transform = '';
+          node.__leSortAnimFrame = null;
+          node.__leSortAnimTimer = null;
+        } catch (_) {}
+      }, duration + 80);
+    });
+  }
+
+  function leMeasureSortSlotRect(dragItem) {
+    if (!dragItem) return null;
+    const prevTransform = dragItem.style.transform;
+    const prevTransition = dragItem.style.transition;
+    try {
+      dragItem.style.transition = 'none';
+      dragItem.style.transform = 'none';
+      return dragItem.getBoundingClientRect();
+    } catch (_) {
+      return null;
+    } finally {
+      dragItem.style.transform = prevTransform;
+      dragItem.style.transition = prevTransition;
+    }
+  }
+
+  function leMoveSortDragItem(state, ev) {
+    if (!state || !state.dragItem || !ev) return;
+    const rect = leMeasureSortSlotRect(state.dragItem);
+    if (!rect) return;
+    const grabOffsetX = Number.isFinite(state.grabOffsetX) ? state.grabOffsetX : rect.width / 2;
+    const grabOffsetY = Number.isFinite(state.grabOffsetY) ? state.grabOffsetY : rect.height / 2;
+    const tx = ev.clientX - grabOffsetX - rect.left;
+    const ty = ev.clientY - grabOffsetY - rect.top;
+    state.dragItem.style.setProperty('--le-drag-x', `${tx}px`);
+    state.dragItem.style.setProperty('--le-drag-y', `${ty}px`);
+  }
+
+  function leResetSortDragItem(dragItem) {
+    if (!dragItem) return;
+    try {
+      dragItem.style.removeProperty('--le-drag-x');
+      dragItem.style.removeProperty('--le-drag-y');
+    } catch (_) {}
+  }
+
+  function leGetSortReferenceNode(dragItem, target, before) {
+    if (!target) return null;
+    if (before) return target;
+    return target.nextSibling === dragItem ? dragItem.nextSibling : target.nextSibling;
+  }
+
+  function leIsSortReferenceUnchanged(dragItem, referenceNode) {
+    if (!dragItem) return true;
+    return dragItem === referenceNode || dragItem.nextSibling === referenceNode;
+  }
+
   function leInstallPointerSorter(container, selector, options = {}) {
     if (!container) return;
     if (typeof container.__leSortCleanup === 'function') container.__leSortCleanup();
@@ -2957,6 +3089,7 @@ function buildOverlay() {
       state.dragging = true;
       state.dragItem.classList.add('le-dragging');
       container.classList.add('le-sorting');
+      leMoveSortDragItem(state, ev);
       hidePreview();
       try { ev?.preventDefault?.(); } catch (_) {}
     }
@@ -2966,6 +3099,7 @@ function buildOverlay() {
       clearHoldTimer();
       clearOver();
       dragItem.classList.remove('le-dragging');
+      leResetSortDragItem(dragItem);
       container.classList.remove('le-sorting');
       try { dragItem.releasePointerCapture(pointerId); } catch (_) {}
       document.removeEventListener('pointermove', onPointerMove, true);
@@ -2992,11 +3126,14 @@ function buildOverlay() {
       if (typeof options.canStart === 'function' && !options.canStart()) return;
       const target = ev.target && ev.target.closest ? ev.target.closest(selector) : null;
       if (!target || !container.contains(target)) return;
+      const startRect = target.getBoundingClientRect();
       if (ev.target && ev.target.closest && ev.target.closest('button,input,textarea,select,a')) return;
       state = {
         pointerId: ev.pointerId,
         startX: ev.clientX,
         startY: ev.clientY,
+        grabOffsetX: ev.clientX - startRect.left,
+        grabOffsetY: ev.clientY - startRect.top,
         dragItem: target,
         dragging: false,
         overItem: null,
@@ -3017,6 +3154,7 @@ function buildOverlay() {
       const dy = ev.clientY - state.startY;
       if (!state.dragging && Math.hypot(dx, dy) < LE_SORT_DRAG_THRESHOLD) return;
       startDragging(ev);
+      leMoveSortDragItem(state, ev);
       ev.preventDefault();
       leAutoScrollSortContainer(scrollEl, ev, axis);
       const under = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -3029,7 +3167,15 @@ function buildOverlay() {
       const before = axis === 'x'
         ? ev.clientX < rect.left + rect.width / 2
         : ev.clientY < rect.top + rect.height / 2;
-      container.insertBefore(state.dragItem, before ? target : target.nextSibling);
+      const referenceNode = leGetSortReferenceNode(state.dragItem, target, before);
+      if (leIsSortReferenceUnchanged(state.dragItem, referenceNode)) {
+        leMoveSortDragItem(state, ev);
+        return;
+      }
+      const beforeRects = leCaptureSortRects(container, selector);
+      container.insertBefore(state.dragItem, referenceNode);
+      leAnimateSortReflow(container, selector, beforeRects, { dragItem: state.dragItem, duration: LE_SORT_ANIMATION_MS });
+      leMoveSortDragItem(state, ev);
     };
     const onPointerUp = (ev) => {
       if (state && state.pointerId === ev.pointerId) finish(ev);
