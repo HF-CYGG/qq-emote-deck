@@ -12,3 +12,12 @@ test("context save menu main item clicks the first save target instead of doing 
     /leAddQContextMenu\(\s*qContextMenu,\s*"保存到本地表情",\s*subMenuList,[\s\S]*?\},\s*true\s*\);/
   );
 });
+
+test("context save submenu has hover fallbacks and topmost z-index", () => {
+  const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
+
+  assert.match(renderer, /\.le-sub-context-menu\{[^}]*z-index:2147483647/);
+  assert.match(renderer, /function\s+leOpenSubMenuFromAnchor/);
+  assert.match(renderer, /parentEl\.matches\(":hover"\)/);
+  assert.match(renderer, /document\.addEventListener\("pointermove",\s*openFromPointer,\s*true\)/);
+});

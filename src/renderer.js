@@ -3649,7 +3649,7 @@ function leEnsureContextMenuStyle() {
   const style = document.createElement('style');
   style.id = 'le-contextmenu-style';
   style.textContent = `
-.le-sub-context-menu{position:fixed;top:var(--top);left:var(--left);z-index:100000;min-width:160px;max-width:320px;max-height:260px;display:none;background:var(--bg_transparent,#2b2b2b);color:var(--text_primary,#e5e7eb);border:1px solid rgba(0,0,0,.1);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);overflow:hidden}
+.le-sub-context-menu{position:fixed;top:var(--top);left:var(--left);z-index:2147483647;min-width:160px;max-width:320px;max-height:260px;display:none;background:var(--bg_transparent,#2b2b2b);color:var(--text_primary,#e5e7eb);border:1px solid rgba(0,0,0,.1);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);overflow:hidden}
 .le-sub-context-menu.show{display:block}
 .le-sub-context-menu .le-sub-scroll{max-height:260px;overflow:auto}
 .le-sub-context-menu .le-sub-item{padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap}
@@ -3657,6 +3657,13 @@ function leEnsureContextMenuStyle() {
 .le-sub-context-menu .le-sub-arrow{margin-left:auto;opacity:.7}
 `;
   document.head.appendChild(style);
+}
+
+function leRemoveAllSubMenus() {
+  document.querySelectorAll(".le-sub-context-menu").forEach((el) => {
+    try { el.__leCleanup?.(); } catch (_) {}
+    el.remove();
+  });
 }
 
 function leEnsureToastStyle() {
@@ -3748,9 +3755,31 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
     leSubMenuTimers.set(id, timer);
   };
 
-  const openMenuAt = (event) => {
+  function lePositionSubMenuFromAnchor(anchorEl) {
+    if (!anchorEl || !anchorEl.getBoundingClientRect) return;
+    const rect = anchorEl.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const menuWidth = Math.max(subMenuEl.offsetWidth || 180, 160);
+    const menuHeight = Math.min(Math.max(subMenuEl.offsetHeight || 80, 80), 260);
+    const gap = 2;
+    let left = rect.x + rect.width + gap;
+    if (viewportWidth && left + menuWidth > viewportWidth - 4) left = Math.max(4, rect.x - menuWidth - gap);
+    let top = rect.y;
+    if (viewportHeight && top + menuHeight > viewportHeight - 4) top = Math.max(4, viewportHeight - menuHeight - 4);
+    subMenuEl.style.setProperty("--top", `${top}px`);
+    subMenuEl.style.setProperty("--left", `${left}px`);
+  }
+
+  function leOpenSubMenuFromAnchor(anchorEl = parentEl) {
     clearMenuTimer(menuId);
     subMenuEl.classList.add("show");
+    subMenuEl.style.zIndex = "2147483647";
+    lePositionSubMenuFromAnchor(anchorEl);
+  }
+
+  const openMenuAt = (event) => {
+    leOpenSubMenuFromAnchor(parentEl);
     let currentEl = parentEl;
     while (currentEl) {
       const currentSubmenuId = currentEl.getAttribute("data-submenu-id");
@@ -3775,11 +3804,7 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
         currentEl = null;
       }
     }
-    if (event && event.currentTarget && event.currentTarget.getBoundingClientRect) {
-      const rect = event.currentTarget.getBoundingClientRect();
-      subMenuEl.style.setProperty("--top", `${rect.y}px`);
-      subMenuEl.style.setProperty("--left", `${rect.x + rect.width}px`);
-    }
+    event?.stopPropagation?.();
   };
 
   subMenuEl.addEventListener("mouseenter", openMenuAt);
@@ -3826,10 +3851,7 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
       const openChildMenu = (event) => {
         const childMenuId = subMenuItemEl.getAttribute("data-submenu-id");
         clearMenuTimer(childMenuId);
-        const rect = event.currentTarget.getBoundingClientRect();
-        childSubMenu.classList.add("show");
-        childSubMenu.style.setProperty("--top", `${rect.y}px`);
-        childSubMenu.style.setProperty("--left", `${rect.x + rect.width}px`);
+        if (typeof childSubMenu.__leOpenFromAnchor === "function") childSubMenu.__leOpenFromAnchor(event.currentTarget);
       };
       subMenuItemEl.addEventListener("mouseenter", openChildMenu);
       subMenuItemEl.addEventListener("pointerenter", openChildMenu);
@@ -3846,22 +3868,32 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
       event.stopPropagation();
       callback(event, menuData);
       leSubMenuTimers.clear();
-      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      leRemoveAllSubMenus();
       document.querySelector(".q-context-menu")?.remove();
     });
     scrollEl.appendChild(subMenuItemEl);
   });
 
   const openFromParent = (event) => {
-    clearMenuTimer(menuId);
-    const rect = event.currentTarget.getBoundingClientRect();
-    subMenuEl.classList.add("show");
-    subMenuEl.style.setProperty("--top", `${rect.y}px`);
-    subMenuEl.style.setProperty("--left", `${rect.x + rect.width}px`);
+    leOpenSubMenuFromAnchor(event?.currentTarget || parentEl);
+  };
+  const openFromPointer = (event) => {
+    if (!event || typeof event.clientX !== "number" || typeof event.clientY !== "number") return;
+    const rect = parentEl.getBoundingClientRect();
+    if (
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom
+    ) {
+      leOpenSubMenuFromAnchor(parentEl);
+    }
   };
   parentEl.addEventListener("mouseenter", openFromParent);
+  parentEl.addEventListener("mouseover", openFromParent);
   parentEl.addEventListener("pointerenter", openFromParent);
   parentEl.addEventListener("mousemove", openFromParent);
+  parentEl.addEventListener("pointermove", openFromParent);
   parentEl.addEventListener("mouseleave", (event) => {
     const relatedTarget = event.relatedTarget;
     const submenuId = parentEl.getAttribute("data-submenu-id");
@@ -3869,7 +3901,19 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
     if (relatedTarget && submenu && submenu.contains(relatedTarget)) return;
     setCloseTimer(menuId, subMenuEl);
   });
+  document.addEventListener("pointermove", openFromPointer, true);
+  document.addEventListener("mousemove", openFromPointer, true);
+  subMenuEl.__leOpenFromAnchor = leOpenSubMenuFromAnchor;
+  subMenuEl.__leCleanup = () => {
+    document.removeEventListener("pointermove", openFromPointer, true);
+    document.removeEventListener("mousemove", openFromPointer, true);
+  };
   document.body.appendChild(subMenuEl);
+  const openIfHovered = () => {
+    try { if (parentEl.matches(":hover")) leOpenSubMenuFromAnchor(parentEl); } catch (_) {}
+  };
+  requestAnimationFrame(openIfHovered);
+  setTimeout(openIfHovered, 80);
   return subMenuEl;
 }
 
@@ -3967,7 +4011,7 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
       event.stopPropagation();
       callback(event);
       leSubMenuTimers.clear();
-      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      leRemoveAllSubMenus();
       qContextMenu.remove();
     });
     qContextMenu.appendChild(contextItem);
@@ -3980,7 +4024,7 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
       e.stopPropagation();
       callback(e);
       leSubMenuTimers.clear();
-      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      leRemoveAllSubMenus();
       qContextMenu.remove();
     });
   }
@@ -4194,7 +4238,7 @@ function leInstallImageContextMenu() {
     try {
       const qContextMenu = document.querySelector(".q-context-menu:not(.le-context-menu)");
     if (!qContextMenu) {
-      document.querySelectorAll(".le-sub-context-menu").forEach((el) => el.remove());
+      leRemoveAllSubMenus();
       return;
     }
     qContextMenu.classList.add("le-context-menu");
