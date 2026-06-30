@@ -1,9 +1,15 @@
 const path = require("path");
+const {
+  dedupeOrderArray,
+  sanitizeImageOrderMap,
+} = require("./order-utils.js");
 
 const DEFAULT_CONFIG = Object.freeze({
   rootDir: "",
   recent: [],
   pinned: [],
+  packOrder: [],
+  imageOrder: {},
   lastCategory: "",
   hotkey: "Alt+E",
   gridCols: 6,
@@ -23,6 +29,8 @@ function cloneDefaultConfig() {
     ...DEFAULT_CONFIG,
     recent: [],
     pinned: [],
+    packOrder: [],
+    imageOrder: {},
   };
 }
 
@@ -57,6 +65,8 @@ function sanitizeConfig(input) {
     }
     out.pinned = pinned;
   }
+  out.packOrder = dedupeOrderArray(input.packOrder, 1000);
+  out.imageOrder = sanitizeImageOrderMap(input.imageOrder, { maxPacks: 500, maxImagesPerPack: 2000 });
 
   if (typeof input.lastCategory === "string") out.lastCategory = input.lastCategory.slice(0, 128);
   if (typeof input.hotkey === "string") out.hotkey = input.hotkey.slice(0, 64) || DEFAULT_CONFIG.hotkey;
@@ -77,6 +87,7 @@ function isMeaningfulConfig(input) {
   const cfg = sanitizeConfig(input);
   if (cfg.rootDir) return true;
   if (cfg.recent.length > 0 || cfg.pinned.length > 0) return true;
+  if (cfg.packOrder.length > 0 || Object.keys(cfg.imageOrder).length > 0) return true;
   if (cfg.lastCategory) return true;
   if (cfg.hotkey !== DEFAULT_CONFIG.hotkey) return true;
   if (cfg.gridCols !== DEFAULT_CONFIG.gridCols) return true;

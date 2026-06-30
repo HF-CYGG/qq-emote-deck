@@ -812,11 +812,21 @@ function injectLEStylesOnce() {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
     padding: 6px; border-radius: 8px; cursor: pointer;
     transition: background-color .15s, box-shadow .15s;
+    touch-action: manipulation;
   }
   #local-emote-overlay .le-card:hover { background: var(--le-hover-bg); }
+  #local-emote-overlay .le-card.le-dragging {
+    opacity: .58;
+    transform: scale(.96);
+    cursor: grabbing;
+    will-change: transform, opacity;
+  }
+  #local-emote-overlay .le-card.le-drag-over { box-shadow: inset 0 0 0 2px var(--le-primary); }
   #local-emote-overlay .le-img {
     width: 64px; height: 64px; object-fit: contain;
     background: var(--le-input-bg); border: 1px solid var(--le-image-border); border-radius: 8px;
+    -webkit-user-drag: none;
+    user-select: none;
   }
   #local-emote-overlay .le-name {
     font-size: 12px; color: var(--le-muted);
@@ -898,9 +908,11 @@ function injectLEStylesOnce() {
   /* 底部表情包选择栏（圆形封面） */
   #local-emote-overlay .le-packs-bar { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--le-divider); overflow: auto hidden; background: var(--le-header-bg); }
   #local-emote-overlay .le-packs-bar::-webkit-scrollbar { height: 8px; }
-  #local-emote-overlay .le-pack { position: relative; width: 36px; height: 36px; border-radius: 999px; background: var(--le-input-bg); border: 1px solid var(--le-border); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .15s, background-color .15s, box-shadow .15s; }
+  #local-emote-overlay .le-pack { position: relative; width: 36px; height: 36px; border-radius: 999px; background: var(--le-input-bg); border: 1px solid var(--le-border); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .15s, background-color .15s, box-shadow .15s; touch-action: manipulation; }
   #local-emote-overlay .le-pack:hover { background: var(--le-hover-bg); }
   #local-emote-overlay .le-pack.active { box-shadow: inset 0 0 0 2px var(--le-primary); }
+  #local-emote-overlay .le-pack.le-dragging { opacity: .62; transform: scale(.9); cursor: grabbing; will-change: transform, opacity; }
+  #local-emote-overlay .le-pack.le-drag-over { box-shadow: inset 0 0 0 2px var(--le-primary); }
   #local-emote-overlay .le-pack img { width: 28px; height: 28px; object-fit: cover; border-radius: 999px; }
   #local-emote-overlay .le-pack .le-pack-badge { position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px; border-radius: 999px; background: var(--le-primary); opacity: .85; }
 
@@ -2892,6 +2904,233 @@ function buildOverlay() {
     target.appendChild(empty);
   }
 
+  const LE_SORT_DRAG_THRESHOLD = 6;
+  const LE_SORT_HOLD_DELAY = 180;
+
+  function leNormalizeOrderPath(value) {
+    if (typeof value !== 'string') return '';
+    const normalized = value.trim().replace(/\\/g, '/');
+    if (!normalized) return '';
+    if (/^[A-Za-z]:\/$/.test(normalized)) return normalized;
+    return normalized.replace(/\/+$/g, '');
+  }
+
+  function leCurrentPackDir() {
+    if (typeof selectedCat !== 'string' || !selectedCat.startsWith('__dir__|')) return '';
+    return selectedCat.slice('__dir__|'.length);
+  }
+
+  function leAutoScrollSortContainer(scrollEl, ev, axis) {
+    if (!scrollEl || !ev) return;
+    const rect = scrollEl.getBoundingClientRect();
+    const edge = 30;
+    const step = 18;
+    if (axis === 'x') {
+      if (ev.clientX < rect.left + edge) scrollEl.scrollLeft -= step;
+      else if (ev.clientX > rect.right - edge) scrollEl.scrollLeft += step;
+      return;
+    }
+    if (ev.clientY < rect.top + edge) scrollEl.scrollTop -= step;
+    else if (ev.clientY > rect.bottom - edge) scrollEl.scrollTop += step;
+  }
+
+  function leInstallPointerSorter(container, selector, options = {}) {
+    if (!container) return;
+    if (typeof container.__leSortCleanup === 'function') container.__leSortCleanup();
+    let state = null;
+    const axis = options.axis || 'y';
+    const scrollEl = options.scrollContainer || container;
+
+    const clearOver = () => {
+      if (state && state.overItem) state.overItem.classList.remove('le-drag-over');
+      if (state) state.overItem = null;
+    };
+    const clearHoldTimer = () => {
+      if (state && state.holdTimer) {
+        window.clearTimeout(state.holdTimer);
+        state.holdTimer = null;
+      }
+    };
+    function startDragging(ev) {
+      if (!state || state.dragging) return;
+      clearHoldTimer();
+      state.dragging = true;
+      state.dragItem.classList.add('le-dragging');
+      container.classList.add('le-sorting');
+      hidePreview();
+      try { ev?.preventDefault?.(); } catch (_) {}
+    }
+    const finish = (ev) => {
+      if (!state) return;
+      const { dragItem, pointerId, dragging } = state;
+      clearHoldTimer();
+      clearOver();
+      dragItem.classList.remove('le-dragging');
+      container.classList.remove('le-sorting');
+      try { dragItem.releasePointerCapture(pointerId); } catch (_) {}
+      document.removeEventListener('pointermove', onPointerMove, true);
+      document.removeEventListener('pointerup', onPointerUp, true);
+      document.removeEventListener('pointercancel', onPointerCancel, true);
+      if (dragging) {
+        dragItem.__leSuppressClickOnce = true;
+        window.setTimeout(() => { dragItem.__leSuppressClickOnce = false; }, 500);
+        try {
+          const ordered = Array.from(container.querySelectorAll(selector));
+          if (typeof options.onCommit === 'function') options.onCommit(ordered);
+        } catch (e) {
+          dbg('drag sort commit error', e && e.message);
+        }
+        if (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+      }
+      state = null;
+    };
+    const onPointerDown = (ev) => {
+      if (ev.button !== 0) return;
+      if (typeof options.canStart === 'function' && !options.canStart()) return;
+      const target = ev.target && ev.target.closest ? ev.target.closest(selector) : null;
+      if (!target || !container.contains(target)) return;
+      if (ev.target && ev.target.closest && ev.target.closest('button,input,textarea,select,a')) return;
+      state = {
+        pointerId: ev.pointerId,
+        startX: ev.clientX,
+        startY: ev.clientY,
+        dragItem: target,
+        dragging: false,
+        overItem: null,
+        holdTimer: null,
+        lastMoveEvent: null,
+      };
+      try { target.setPointerCapture(ev.pointerId); } catch (_) {}
+      state.holdTimer = window.setTimeout(() => startDragging(ev), LE_SORT_HOLD_DELAY);
+      document.addEventListener('pointermove', onPointerMove, true);
+      document.addEventListener('pointerup', onPointerUp, true);
+      document.addEventListener('pointercancel', onPointerCancel, true);
+    };
+    const onPointerMove = (ev) => {
+      if (!state || state.pointerId !== ev.pointerId) return;
+      if (state.lastMoveEvent === ev) return;
+      state.lastMoveEvent = ev;
+      const dx = ev.clientX - state.startX;
+      const dy = ev.clientY - state.startY;
+      if (!state.dragging && Math.hypot(dx, dy) < LE_SORT_DRAG_THRESHOLD) return;
+      startDragging(ev);
+      ev.preventDefault();
+      leAutoScrollSortContainer(scrollEl, ev, axis);
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const target = under && under.closest ? under.closest(selector) : null;
+      if (!target || target === state.dragItem || !container.contains(target)) return;
+      clearOver();
+      target.classList.add('le-drag-over');
+      state.overItem = target;
+      const rect = target.getBoundingClientRect();
+      const before = axis === 'x'
+        ? ev.clientX < rect.left + rect.width / 2
+        : ev.clientY < rect.top + rect.height / 2;
+      container.insertBefore(state.dragItem, before ? target : target.nextSibling);
+    };
+    const onPointerUp = (ev) => {
+      if (state && state.pointerId === ev.pointerId) finish(ev);
+    };
+    const onPointerCancel = (ev) => {
+      if (state && state.pointerId === ev.pointerId) finish(ev);
+    };
+    function lePreventNativeSortDrag(ev) {
+      const target = ev.target && ev.target.closest ? ev.target.closest(selector) : null;
+      if (!target || !container.contains(target)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+
+    container.addEventListener('pointerdown', onPointerDown);
+    container.addEventListener('pointermove', onPointerMove);
+    container.addEventListener('pointerup', onPointerUp);
+    container.addEventListener('pointercancel', onPointerCancel);
+    container.addEventListener('dragstart', lePreventNativeSortDrag, true);
+    container.__leSortCleanup = () => {
+      container.removeEventListener('pointerdown', onPointerDown);
+      container.removeEventListener('pointermove', onPointerMove);
+      container.removeEventListener('pointerup', onPointerUp);
+      container.removeEventListener('pointercancel', onPointerCancel);
+      container.removeEventListener('dragstart', lePreventNativeSortDrag, true);
+      document.removeEventListener('pointermove', onPointerMove, true);
+      document.removeEventListener('pointerup', onPointerUp, true);
+      document.removeEventListener('pointercancel', onPointerCancel, true);
+      if (state) finish();
+      container.__leSortCleanup = null;
+    };
+  }
+
+  function leCommitImageOrder(nodes) {
+    if (searchQuery.trim()) return;
+    const dir = leCurrentPackDir();
+    if (!dir) return;
+    const dirKey = leNormalizeOrderPath(dir);
+    const order = (Array.isArray(nodes) ? nodes : [])
+      .map((node) => leNormalizeOrderPath(node?.dataset?.leSortPath || ''))
+      .filter(Boolean);
+    if (order.length === 0) return;
+    try {
+      const cfg = window.localEmote.getConfig();
+      cfg.imageOrder = cfg.imageOrder || {};
+      cfg.imageOrder[dirKey] = order;
+      window.localEmote.setConfig(cfg);
+      const byPath = new Map(currentList.map((item) => [leNormalizeOrderPath(item.absPath || item.path), item]));
+      const seen = new Set();
+      currentList = order.map((item) => {
+        seen.add(item);
+        return byPath.get(item);
+      }).filter(Boolean).concat(currentList.filter((item) => !seen.has(leNormalizeOrderPath(item.absPath || item.path))));
+      (Array.isArray(nodes) ? nodes : []).forEach((node, index) => { node.dataset.index = String(index); });
+      activeIndex = Math.min(Math.max(activeIndex, 0), Math.max(0, currentList.length - 1));
+      updateActiveClasses();
+      dbg('imageOrder saved', dirKey, order.length);
+    } catch (e) {
+      dbg('imageOrder save failed', e && e.message);
+    }
+  }
+
+  function leCommitPackOrder(nodes) {
+    const order = (Array.isArray(nodes) ? nodes : [])
+      .map((node) => leNormalizeOrderPath(node?.dataset?.leSortDir || ''))
+      .filter(Boolean);
+    if (order.length === 0) return;
+    try {
+      const cfg = window.localEmote.getConfig();
+      cfg.packOrder = order;
+      window.localEmote.setConfig(cfg);
+      const byDir = new Map(packsCache.map((pack) => [leNormalizeOrderPath(pack.dir || pack.path), pack]));
+      const seen = new Set();
+      packsCache = order.map((dir) => {
+        seen.add(dir);
+        return byDir.get(dir);
+      }).filter(Boolean).concat(packsCache.filter((pack) => !seen.has(leNormalizeOrderPath(pack.dir || pack.path))));
+      dbg('packOrder saved', order.length);
+    } catch (e) {
+      dbg('packOrder save failed', e && e.message);
+    }
+  }
+
+  function leInstallSortableGrid(gridEl) {
+    if (searchQuery.trim()) return;
+    leInstallPointerSorter(gridEl, '.le-card', {
+      axis: 'y',
+      scrollContainer: scroll,
+      canStart: () => !searchQuery.trim() && !!leCurrentPackDir(),
+      onCommit: leCommitImageOrder,
+    });
+  }
+
+  function leInstallSortablePacksBar(barEl) {
+    leInstallPointerSorter(barEl, '.le-pack', {
+      axis: 'x',
+      scrollContainer: barEl,
+      onCommit: leCommitPackOrder,
+    });
+  }
+
   function getCards() { return Array.from(grid.querySelectorAll('.le-card')); }
   function getCols() {
     const cs = getComputedStyle(grid).gridTemplateColumns || '';
@@ -3179,12 +3418,15 @@ function buildOverlay() {
         const it = currentList[idx];
         const card = document.createElement('div');
         card.className = 'le-card';
+        card.draggable = false;
         card.setAttribute('role', 'option');
         card.setAttribute('tabindex', '-1');
         card.dataset.index = String(idx);
+        card.dataset.leSortPath = leNormalizeOrderPath(it.absPath || it.path);
 
         const img = document.createElement('img');
         img.className = 'le-img';
+        img.draggable = false;
         const imgUrl = it.url || it.preview || '';
         img.src = imgUrl;
         img.alt = it.name || '';
@@ -3201,6 +3443,12 @@ function buildOverlay() {
         card.appendChild(img);
         if (name) card.appendChild(name);
         card.addEventListener('click', async (ev) => {
+          if (card.__leSuppressClickOnce) {
+            card.__leSuppressClickOnce = false;
+            ev.preventDefault();
+            ev.stopPropagation();
+            return;
+          }
         const p = it.absPath || it.path;
         dbg('grid click:', p, 'mode=', (window.localEmote.getConfig && window.localEmote.getConfig().sendMode));
         const isGif = /\.gif$/i.test(String(p || ''));
@@ -3359,6 +3607,7 @@ function buildOverlay() {
         });
         grid.appendChild(card);
       }
+      leInstallSortableGrid(grid);
       applyActiveAfterRender();
     })();
     try { await renderGridPromise; } finally {
@@ -3381,14 +3630,23 @@ function buildOverlay() {
       const key = `__dir__|${dirPath}`;
       const item = document.createElement('div');
       item.className = 'le-pack' + (selectedCat === key ? ' active' : '');
+      item.draggable = false;
       item.title = p.name || dirPath;
+      item.dataset.leSortDir = leNormalizeOrderPath(dirPath);
       const img = document.createElement('img');
+      img.draggable = false;
       const coverAbs = p.coverPath || p.firstPath || p.first || '';
       const coverUrl = (window.localEmote && window.localEmote.toLocalUrl) ? window.localEmote.toLocalUrl(coverAbs) : coverAbs;
       img.src = coverUrl || '';
       img.alt = p.name || '';
       item.appendChild(img);
-      item.addEventListener('click', () => {
+      item.addEventListener('click', (ev) => {
+        if (item.__leSuppressClickOnce) {
+          item.__leSuppressClickOnce = false;
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
         dbg('packsBar click:', key);
         selectedCat = key;
         const cfg = window.localEmote.getConfig();
@@ -3403,6 +3661,7 @@ function buildOverlay() {
       frag.appendChild(item);
     }
     packsBar.appendChild(frag);
+    leInstallSortablePacksBar(packsBar);
   }
 
   async function loadPacks() {

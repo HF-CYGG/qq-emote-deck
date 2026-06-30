@@ -6,6 +6,8 @@ const DEFAULT_CONFIG = Object.freeze({
   rootDir: "",
   recent: [],
   pinned: [],
+  packOrder: [],
+  imageOrder: {},
   lastCategory: "",
   hotkey: "Alt+E",
   gridCols: 6,
@@ -21,11 +23,66 @@ const CONFIG_KEYS = new Set(Object.keys(DEFAULT_CONFIG));
 const SEND_MODES = new Set(["multi", "image", "native"]);
 
 function cloneDefaultConfig() {
-  return { ...DEFAULT_CONFIG, recent: [], pinned: [] };
+  return { ...DEFAULT_CONFIG, recent: [], pinned: [], packOrder: [], imageOrder: {} };
 }
 function clampInt(value, min, max, fallback) {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(value)));
+}
+function normalizeOrderPath(value) {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim().replace(/\\/g, "/");
+  if (!normalized) return "";
+  if (/^[A-Za-z]:\/$/.test(normalized)) return normalized;
+  return normalized.replace(/\/+$/g, "");
+}
+function dedupeOrderArray(value, limit = 2000) {
+  if (!Array.isArray(value)) return [];
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 2000;
+  const seen = new Set();
+  const out = [];
+  for (const item of value) {
+    const normalized = normalizeOrderPath(item);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+function sanitizeImageOrderMap(value, options = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const maxPacks = Number.isFinite(options.maxPacks) ? Math.max(0, Math.floor(options.maxPacks)) : 500;
+  const maxImagesPerPack = Number.isFinite(options.maxImagesPerPack) ? Math.max(0, Math.floor(options.maxImagesPerPack)) : 2000;
+  const out = {};
+  for (const [rawDir, rawOrder] of Object.entries(value)) {
+    if (Object.keys(out).length >= maxPacks) break;
+    const dir = normalizeOrderPath(rawDir);
+    if (!dir || !Array.isArray(rawOrder)) continue;
+    const merged = out[dir] ? out[dir].concat(rawOrder) : rawOrder;
+    const order = dedupeOrderArray(merged, maxImagesPerPack);
+    if (order.length > 0) out[dir] = order;
+  }
+  return out;
+}
+function applyCustomOrder(items, order, getId) {
+  const list = Array.isArray(items) ? items.slice() : [];
+  const orderList = dedupeOrderArray(order);
+  if (orderList.length === 0 || typeof getId !== "function") return list;
+  const rank = new Map();
+  orderList.forEach((item, index) => {
+    if (!rank.has(item)) rank.set(item, index);
+  });
+  return list
+    .map((item, index) => {
+      const id = normalizeOrderPath(getId(item));
+      return { item, index, rank: rank.has(id) ? rank.get(id) : Number.POSITIVE_INFINITY };
+    })
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.item);
 }
 function sanitizeConfig(input) {
   const out = cloneDefaultConfig();
@@ -49,6 +106,8 @@ function sanitizeConfig(input) {
     }
     out.pinned = pinned;
   }
+  out.packOrder = dedupeOrderArray(input.packOrder, 1000);
+  out.imageOrder = sanitizeImageOrderMap(input.imageOrder, { maxPacks: 500, maxImagesPerPack: 2000 });
   if (typeof input.lastCategory === "string") out.lastCategory = input.lastCategory.slice(0, 128);
   if (typeof input.hotkey === "string") out.hotkey = input.hotkey.slice(0, 64) || DEFAULT_CONFIG.hotkey;
   out.gridCols = clampInt(input.gridCols, 2, 12, out.gridCols);
@@ -68,6 +127,8 @@ function isMeaningfulConfig(input) {
     cfg.rootDir ||
     cfg.recent.length ||
     cfg.pinned.length ||
+    cfg.packOrder.length ||
+    Object.keys(cfg.imageOrder).length ||
     cfg.lastCategory ||
     cfg.hotkey !== DEFAULT_CONFIG.hotkey ||
     cfg.gridCols !== DEFAULT_CONFIG.gridCols ||
@@ -277,7 +338,13 @@ function importBrowserConfigSyncIPC(cfg) {
 }
 function cloneConfig(cfg) {
   const sanitized = sanitizeConfig(cfg);
-  return { ...sanitized, recent: sanitized.recent.slice(), pinned: sanitized.pinned.slice() };
+  return {
+    ...sanitized,
+    recent: sanitized.recent.slice(),
+    pinned: sanitized.pinned.slice(),
+    packOrder: sanitized.packOrder.slice(),
+    imageOrder: Object.fromEntries(Object.entries(sanitized.imageOrder).map(([key, value]) => [key, value.slice()])),
+  };
 }
 
 let configCache = null;
@@ -550,7 +617,7 @@ async function listPacksInDir(root) {
     } else {
       arr = await ipcRenderer.invoke("localEmote:listPacksInDir", root);
     }
-    return (Array.isArray(arr) ? arr : []).map((p) => ({
+    const mapped = (Array.isArray(arr) ? arr : []).map((p) => ({
       name: p?.name || "",
       dir: p?.dir || "",
       first: p?.first || "",
@@ -559,6 +626,7 @@ async function listPacksInDir(root) {
       count: p?.count || 0,
       relativeDir: p?.relativeDir || "",
     }));
+    return applyCustomOrder(mapped, cfg.packOrder, (item) => item.dir || item.path);
   } catch (_) { return []; }
 }
 
@@ -568,18 +636,24 @@ async function listImagesInDir(dir) {
     const index = await getLibraryIndex(false);
     const pack = Array.isArray(index.packs) ? index.packs.find((p) => p.dir === dir || p.path === dir) : null;
     if (pack && Array.isArray(pack.images)) {
-      return pack.images.map((item) => ({
+      const cfg = getConfig();
+      const dirKey = normalizeOrderPath(dir);
+      const mapped = pack.images.map((item) => ({
         name: item.name || basename(item.path),
         path: item.path || item.absPath,
         absPath: item.path || item.absPath,
         url: item.url || toLocalUrl(item.path || item.absPath),
       }));
+      return applyCustomOrder(mapped, cfg.imageOrder?.[dirKey], (item) => item.absPath || item.path);
     }
     const arr = await ipcRenderer.invoke("localEmote:listBrowseDir", dir);
-    return (Array.isArray(arr) ? arr : []).map((i) => {
+    const cfg = getConfig();
+    const dirKey = normalizeOrderPath(dir);
+    const mapped = (Array.isArray(arr) ? arr : []).map((i) => {
       const p = i?.path || "";
       return { name: i?.name || (p ? basename(p) : ""), path: p, url: toLocalUrl(p) };
     });
+    return applyCustomOrder(mapped, cfg.imageOrder?.[dirKey], (item) => item.path);
   } catch (_) { return []; }
 }
 

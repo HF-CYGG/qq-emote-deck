@@ -78,6 +78,34 @@ test("cleanConfigRefs drops missing recent and pinned paths", async () => {
   assert.equal(cleaned.lastCategory, "__dir__|" + path.join(root, "cats"));
 });
 
+test("cleanConfigRefs drops missing drag sort pack and image references", async () => {
+  const root = makeTempRoot();
+  const keptDir = path.join(root, "cats");
+  const missingDir = path.join(root, "dogs");
+  const keptImage = path.join(keptDir, "cat.png");
+  const missingImage = path.join(keptDir, "missing.png");
+  writeImage(keptImage);
+  const index = await buildLibraryIndex(root);
+
+  const cleaned = cleanConfigRefs(
+    {
+      packOrder: [missingDir, keptDir, keptDir],
+      imageOrder: {
+        [keptDir]: [missingImage, keptImage, keptImage],
+        [missingDir]: [keptImage],
+      },
+    },
+    index
+  );
+
+  const keptDirNorm = path.resolve(keptDir).replace(/\\/g, "/");
+  const keptImageNorm = path.resolve(keptImage).replace(/\\/g, "/");
+  assert.deepEqual(cleaned.packOrder, [keptDirNorm]);
+  assert.deepEqual(cleaned.imageOrder, {
+    [keptDirNorm]: [keptImageNorm],
+  });
+});
+
 test("buildFolderTree creates a reusable menu tree from indexed packs", async () => {
   const root = makeTempRoot();
   writeImage(path.join(root, "animals", "cats", "cat.png"));

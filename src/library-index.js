@@ -2,6 +2,11 @@ const crypto = require("crypto");
 const fs = require("fs");
 const fsp = require("fs").promises;
 const path = require("path");
+const {
+  dedupeOrderArray,
+  normalizeOrderPath,
+  sanitizeImageOrderMap,
+} = require("./order-utils.js");
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".apng", ".bmp"]);
 
@@ -246,8 +251,8 @@ function buildFolderTree(packs) {
 }
 
 function cleanConfigRefs(config, index) {
-  const imageSet = new Set((index?.images || []).map((item) => normalizeFsPath(item.path || item.absPath)));
-  const packDirSet = new Set((index?.packs || []).map((pack) => path.resolve(pack.dir)));
+  const imageSet = new Set((index?.images || []).map((item) => normalizeFsPath(path.resolve(item.path || item.absPath))));
+  const packDirSet = new Set((index?.packs || []).map((pack) => normalizeOrderPath(path.resolve(pack.dir))));
   const cleanPathArray = (value) => {
     if (!Array.isArray(value)) return [];
     const seen = new Set();
@@ -266,8 +271,19 @@ function cleanConfigRefs(config, index) {
     recent: cleanPathArray(config?.recent),
     pinned: cleanPathArray(config?.pinned),
   };
+  result.packOrder = dedupeOrderArray(config?.packOrder, 1000).filter((dir) => packDirSet.has(dir));
+  const imageOrder = sanitizeImageOrderMap(config?.imageOrder, { maxPacks: 500, maxImagesPerPack: 2000 });
+  result.imageOrder = {};
+  for (const [dir, order] of Object.entries(imageOrder)) {
+    const dirKey = normalizeOrderPath(path.resolve(dir));
+    if (!packDirSet.has(dirKey)) continue;
+    const cleanedOrder = order
+      .map((item) => normalizeFsPath(path.resolve(item)))
+      .filter((item, index, arr) => imageSet.has(item) && arr.indexOf(item) === index);
+    if (cleanedOrder.length > 0) result.imageOrder[dirKey] = cleanedOrder;
+  }
   if (typeof result.lastCategory === "string" && result.lastCategory.startsWith("__dir__|")) {
-    const dir = path.resolve(result.lastCategory.slice("__dir__|".length));
+    const dir = normalizeOrderPath(path.resolve(result.lastCategory.slice("__dir__|".length)));
     if (!packDirSet.has(dir)) result.lastCategory = "";
   }
   return result;

@@ -45,12 +45,36 @@ test("sanitizeConfig preserves user choices and clamps numeric options", () => {
   assert.equal(Object.hasOwn(cfg, "unknown"), false);
 });
 
+test("sanitizeConfig initializes and preserves drag sort order fields", () => {
+  const fallback = sanitizeConfig({});
+  assert.deepEqual(fallback.packOrder, []);
+  assert.deepEqual(fallback.imageOrder, {});
+
+  const cfg = sanitizeConfig({
+    packOrder: ["D:\\emotes\\cats", "D:/emotes/cats", "", 42, "D:\\emotes\\dogs\\"],
+    imageOrder: {
+      "D:\\emotes\\cats": ["D:\\emotes\\cats\\b.png", "D:/emotes/cats/b.png", null, "D:\\emotes\\cats\\a.gif"],
+      "": ["ignored.png"],
+      invalid: "not-array",
+    },
+  });
+
+  assert.deepEqual(cfg.packOrder, ["D:/emotes/cats", "D:/emotes/dogs"]);
+  assert.deepEqual(cfg.imageOrder, {
+    "D:/emotes/cats": ["D:/emotes/cats/b.png", "D:/emotes/cats/a.gif"],
+  });
+});
+
 test("mergeConfigPatch keeps existing persisted values when patch is partial", () => {
   const current = sanitizeConfig({
     rootDir: "D:\\emotes",
     sendMode: "image",
     lastCategory: "__dir__|D:\\emotes\\cats",
     recentLimit: 60,
+    packOrder: ["D:\\emotes\\dogs", "D:\\emotes\\cats"],
+    imageOrder: {
+      "D:\\emotes\\cats": ["D:\\emotes\\cats\\cat.png"],
+    },
   });
 
   const merged = mergeConfigPatch(current, { recentLimit: 10 });
@@ -59,6 +83,10 @@ test("mergeConfigPatch keeps existing persisted values when patch is partial", (
   assert.equal(merged.sendMode, "image");
   assert.equal(merged.lastCategory, "__dir__|D:\\emotes\\cats");
   assert.equal(merged.recentLimit, 10);
+  assert.deepEqual(merged.packOrder, ["D:/emotes/dogs", "D:/emotes/cats"]);
+  assert.deepEqual(merged.imageOrder, {
+    "D:/emotes/cats": ["D:/emotes/cats/cat.png"],
+  });
 });
 
 test("selectStartupConfig prefers meaningful official config over legacy sources", () => {
