@@ -1,18 +1,241 @@
 const { contextBridge, ipcRenderer } = require("electron");
-const {
-  DEFAULT_CONFIG,
-  isMeaningfulConfig,
-  mergeConfigPatch,
-  sanitizeConfig,
-} = require("./config-utils");
-const {
-  planSendEmote,
-  toSendResult,
-} = require("./send-engine");
-const {
-  buildContextSaveTargets,
-  normalizeContextImageSource,
-} = require("./context-save-utils");
+
+// LiteLoader 1.2.4 executes preload as fetched text via runPreloadScript().
+// Keep this file self-contained: local relative require() is not reliable here.
+const DEFAULT_CONFIG = Object.freeze({
+  rootDir: "",
+  recent: [],
+  pinned: [],
+  lastCategory: "",
+  hotkey: "Alt+E",
+  gridCols: 6,
+  showFileName: false,
+  sendMode: "multi",
+  debug: false,
+  recentLimit: 60,
+  pinLimit: 12,
+  imageContextMenu: true,
+  hoverPreview: true,
+});
+const CONFIG_KEYS = new Set(Object.keys(DEFAULT_CONFIG));
+const SEND_MODES = new Set(["multi", "image", "native"]);
+
+function cloneDefaultConfig() {
+  return { ...DEFAULT_CONFIG, recent: [], pinned: [] };
+}
+function clampInt(value, min, max, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+function sanitizeConfig(input) {
+  const out = cloneDefaultConfig();
+  if (!input || typeof input !== "object") return out;
+  const recentLimit = clampInt(input.recentLimit, 1, 999, out.recentLimit);
+  const pinLimit = clampInt(input.pinLimit, 1, 99, out.pinLimit);
+  out.recentLimit = recentLimit;
+  out.pinLimit = pinLimit;
+  if (typeof input.rootDir === "string") out.rootDir = input.rootDir;
+  if (Array.isArray(input.recent)) out.recent = input.recent.filter((p) => typeof p === "string").slice(0, recentLimit);
+  if (Array.isArray(input.pinned)) {
+    const seen = new Set();
+    const pinned = [];
+    for (const item of input.pinned) {
+      if (typeof item !== "string") continue;
+      const normalized = item.replace(/\\/g, "/");
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      pinned.push(normalized);
+      if (pinned.length >= pinLimit) break;
+    }
+    out.pinned = pinned;
+  }
+  if (typeof input.lastCategory === "string") out.lastCategory = input.lastCategory.slice(0, 128);
+  if (typeof input.hotkey === "string") out.hotkey = input.hotkey.slice(0, 64) || DEFAULT_CONFIG.hotkey;
+  out.gridCols = clampInt(input.gridCols, 2, 12, out.gridCols);
+  if (typeof input.showFileName === "boolean") out.showFileName = input.showFileName;
+  if (typeof input.sendMode === "string") {
+    const sendMode = input.sendMode.toLowerCase();
+    out.sendMode = ["multi", "image", "native"].includes(sendMode) ? sendMode : DEFAULT_CONFIG.sendMode;
+  }
+  if (typeof input.debug === "boolean") out.debug = input.debug;
+  if (typeof input.imageContextMenu === "boolean") out.imageContextMenu = input.imageContextMenu;
+  if (typeof input.hoverPreview === "boolean") out.hoverPreview = input.hoverPreview;
+  return out;
+}
+function isMeaningfulConfig(input) {
+  const cfg = sanitizeConfig(input);
+  return !!(
+    cfg.rootDir ||
+    cfg.recent.length ||
+    cfg.pinned.length ||
+    cfg.lastCategory ||
+    cfg.hotkey !== DEFAULT_CONFIG.hotkey ||
+    cfg.gridCols !== DEFAULT_CONFIG.gridCols ||
+    cfg.showFileName !== DEFAULT_CONFIG.showFileName ||
+    cfg.sendMode !== DEFAULT_CONFIG.sendMode ||
+    cfg.debug !== DEFAULT_CONFIG.debug ||
+    cfg.recentLimit !== DEFAULT_CONFIG.recentLimit ||
+    cfg.pinLimit !== DEFAULT_CONFIG.pinLimit ||
+    cfg.imageContextMenu !== DEFAULT_CONFIG.imageContextMenu ||
+    cfg.hoverPreview !== DEFAULT_CONFIG.hoverPreview
+  );
+}
+function mergeConfigPatch(current, patch) {
+  const merged = sanitizeConfig(current);
+  if (patch && typeof patch === "object") {
+    for (const key of Object.keys(patch)) {
+      if (CONFIG_KEYS.has(key)) merged[key] = patch[key];
+    }
+  }
+  return sanitizeConfig(merged);
+}
+function normalizeSendMode(mode) {
+  const value = String(mode || "").toLowerCase();
+  return SEND_MODES.has(value) ? value : "multi";
+}
+function planSendEmote({ mode, capabilities = {}, filePath = "" } = {}) {
+  const normalizedMode = normalizeSendMode(mode);
+  const canImage = !!(capabilities.imageMessage && capabilities.peer);
+  if (normalizedMode === "multi") {
+    return { mode: "multi", strategy: "editor-insert", fallbackStrategy: "clipboard", picSubType: 1, asFace: true, filePath };
+  }
+  if (normalizedMode === "native" && !capabilities.marketFace) {
+    return canImage
+      ? { mode: "native", strategy: "qqnt-image", fallbackStrategy: "clipboard", picSubType: 1, asFace: true, filePath, fallbackUsed: true, reason: "native_market_face_unavailable" }
+      : { mode: "native", strategy: "clipboard", picSubType: 1, asFace: true, filePath, fallbackUsed: true, reason: "native_market_face_unavailable" };
+  }
+  if (normalizedMode === "image") {
+    return canImage
+      ? { mode: "image", strategy: "qqnt-image", fallbackStrategy: "clipboard", picSubType: 0, asFace: false, filePath }
+      : { mode: "image", strategy: "clipboard", picSubType: 0, asFace: false, filePath, fallbackUsed: true, reason: "qqnt_image_unavailable" };
+  }
+  return { mode: normalizedMode, strategy: "clipboard", filePath, fallbackUsed: true, reason: "unsupported_send_mode" };
+}
+function toSendResult({ ok, plan, reason = "" } = {}) {
+  return {
+    ok: !!ok,
+    modeUsed: plan?.mode || "multi",
+    fallbackUsed: !!plan?.fallbackUsed,
+    strategy: plan?.strategy || "",
+    reason: reason || plan?.reason || "",
+  };
+}
+function stripQueryAndHash(value) {
+  let out = String(value || "");
+  const qIdx = out.indexOf("?");
+  if (qIdx >= 0) out = out.slice(0, qIdx);
+  const hIdx = out.indexOf("#");
+  if (hIdx >= 0) out = out.slice(0, hIdx);
+  return out;
+}
+function decodeMaybeTwice(value, twice = false) {
+  let out = String(value || "");
+  try { out = decodeURIComponent(out); } catch (_) {}
+  if (twice) {
+    try { out = decodeURIComponent(out); } catch (_) {}
+  }
+  return out;
+}
+function fileNameOf(value) {
+  const clean = stripQueryAndHash(String(value || "")).replace(/[\\/]+$/, "");
+  const parts = clean.split(/[\\/]/);
+  return parts[parts.length - 1] || "";
+}
+function decodeSlashPath(raw, twice) {
+  return String(raw || "")
+    .split("/")
+    .filter((part) => part.length > 0)
+    .map((part) => decodeMaybeTwice(part, twice))
+    .join("/")
+    .replace(/\//g, "\\");
+}
+function normalizeAppimgPath(raw) {
+  let out = decodeMaybeTwice(raw, true);
+  const driveIdx = out.search(/[A-Za-z]:[\\/]/);
+  if (driveIdx >= 0) out = out.slice(driveIdx);
+  return out.replace(/^\/+/, "").replace(/\//g, "\\");
+}
+function normalizeContextImageSource(input) {
+  const src = typeof input === "string" ? input.trim() : String(input?.src || input?.source || "").trim();
+  if (!src || src.startsWith("qqface:")) return { kind: "unsupported", source: src, fileName: "", mime: "", reason: "unsupported_source" };
+  if (/^data:/i.test(src)) {
+    const match = src.match(/^data:([^;,]+)?(?:;[^,]*)?,/i);
+    return { kind: "data", source: src, fileName: "context-image", mime: (match?.[1] || "").toLowerCase(), reason: "" };
+  }
+  if (/^(blob:|https?:)/i.test(src)) return { kind: "remote", source: src, fileName: fileNameOf(src) || "context-image", mime: "", reason: "" };
+  const clean = stripQueryAndHash(src);
+  if (clean.startsWith("local:///")) {
+    const source = decodeSlashPath(clean.slice("local:///".length), true);
+    return { kind: "file", source, fileName: fileNameOf(source), mime: "", reason: "" };
+  }
+  if (clean.startsWith("file:///")) {
+    const source = decodeSlashPath(clean.slice("file:///".length), false);
+    return { kind: "file", source, fileName: fileNameOf(source), mime: "", reason: "" };
+  }
+  if (clean.startsWith("appimg:///")) {
+    const source = normalizeAppimgPath(clean.slice("appimg:///".length));
+    return { kind: "file", source, fileName: fileNameOf(source), mime: "", reason: "" };
+  }
+  if (clean.startsWith("appimg://")) {
+    const source = normalizeAppimgPath(clean.slice("appimg://".length));
+    return { kind: "file", source, fileName: fileNameOf(source), mime: "", reason: "" };
+  }
+  if (/^[A-Za-z]:[\\/]/.test(clean) || /^\\\\/.test(clean) || clean.startsWith("/")) {
+    return { kind: "file", source: clean, fileName: fileNameOf(clean), mime: "", reason: "" };
+  }
+  return { kind: "unsupported", source: src, fileName: fileNameOf(src), mime: "", reason: "unsupported_source" };
+}
+function normalizeDir(value) {
+  return String(value || "").replace(/[\\/]+$/g, "");
+}
+function joinDir(root, relativeDir) {
+  const sep = root.includes("\\") ? "\\" : "/";
+  return normalizeDir(root) + sep + String(relativeDir || "").split("/").filter(Boolean).join(sep);
+}
+function targetNode(name, dir, relativeDir, children = [], virtual = false) {
+  return { name, dir, path: "__dir__|" + dir, relativeDir, children, virtual };
+}
+function buildContextSaveTargets(index) {
+  const rootDir = normalizeDir(index?.rootDir || "");
+  if (!rootDir || index?.exists === false) return [];
+  const roots = [targetNode("保存到根目录", rootDir, ".", [], false)];
+  const byRelative = new Map();
+  function ensureNode(parts) {
+    let list = roots;
+    let current = "";
+    let node = null;
+    for (const part of parts) {
+      current = current ? current + "/" + part : part;
+      node = byRelative.get(current);
+      if (!node) {
+        node = targetNode(part, joinDir(rootDir, current), current, [], true);
+        byRelative.set(current, node);
+        list.push(node);
+      }
+      list = node.children;
+    }
+    return node;
+  }
+  for (const pack of index?.packs || []) {
+    if (!pack || !pack.relativeDir || pack.relativeDir === ".") continue;
+    const parts = String(pack.relativeDir).split("/").filter(Boolean);
+    if (!parts.length) continue;
+    const node = ensureNode(parts);
+    node.name = pack.name || node.name;
+    node.dir = pack.dir || node.dir;
+    node.path = "__dir__|" + node.dir;
+    node.relativeDir = pack.relativeDir;
+    node.virtual = false;
+  }
+  function sortChildren(nodes) {
+    const first = nodes[0] && nodes[0].relativeDir === "." ? [nodes[0]] : [];
+    const rest = nodes.slice(first.length).sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    for (const node of rest) sortChildren(node.children);
+    nodes.splice(0, nodes.length, ...first, ...rest);
+    return nodes;
+  }
+  return sortChildren(roots);
+}
 /* path module removed: provide string helpers instead */
 function basename(p) {
   try {
