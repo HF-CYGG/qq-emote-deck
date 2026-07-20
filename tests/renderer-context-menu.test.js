@@ -140,3 +140,37 @@ test("context save observer preserves submenus while a processed QQNT menu is st
   assert.match(observerBody[1], /if\s*\(!qContextMenu\)\s*return;/);
   assert.doesNotMatch(observerBody[1], /if\s*\(!qContextMenu\)\s*\{\s*leRemoveAllSubMenus\(\);/);
 });
+
+test("context save activation waits for click before using a delayed pointer fallback", () => {
+  const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
+  const bindBody = renderer.slice(
+    renderer.indexOf("function leBindContextActivate"),
+    renderer.indexOf("function leCreateContextItemFallback")
+  );
+
+  assert.match(bindBody, /const\s+scheduleFallback\s*=/);
+  assert.match(bindBody, /addEventListener\("pointerdown",\s*scheduleFallback,\s*true\)/);
+  assert.match(bindBody, /addEventListener\("mousedown",\s*scheduleFallback,\s*true\)/);
+  assert.match(bindBody, /addEventListener\("click",\s*onClick,\s*true\)/);
+  assert.doesNotMatch(bindBody, /addEventListener\("pointerdown",\s*onActivate/);
+  assert.doesNotMatch(bindBody, /addEventListener\("mousedown",\s*onActivate/);
+});
+
+test("context save lets QQNT dismiss its own menu overlay instead of removing the menu node", () => {
+  const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
+  const contextSection = renderer.slice(
+    renderer.indexOf("function leCreateContextSubMenu"),
+    renderer.indexOf("function leDecodeLocalUrl")
+  );
+
+  assert.match(renderer, /function\s+leDismissQQNTContextMenu\s*\(/);
+  assert.match(renderer, /document\.documentElement\s*\|\|\s*document\.body/);
+  assert.match(renderer, /new\s+MouseEvent\("click",\s*\{[\s\S]*?bubbles:\s*true/);
+  assert.match(renderer, /queueMicrotask\(dispatchOutsideClick\)/);
+  assert.doesNotMatch(contextSection, /qContextMenu\.remove\(\)/);
+  assert.doesNotMatch(contextSection, /document\.querySelector\("\.q-context-menu"\)\?\.remove\(\)/);
+  assert.doesNotMatch(
+    contextSection,
+    /leBindContextActivate\([^,]+,\s*\((?:event|e)\)\s*=>\s*\{\s*(?:event|e)\.stopPropagation\(\)/
+  );
+});

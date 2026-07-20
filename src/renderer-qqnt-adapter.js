@@ -1,13 +1,23 @@
 export async function getCurrentPeer() {
+  const rememberFreshPeer = (peer) => {
+    if (!peer || !peer.peerUid || !peer.chatType) return null;
+    try { window.__le_lastPeer = peer; } catch (_) {}
+    return peer;
+  };
+
   try {
-    if (window.__le_lastPeer && window.__le_lastPeer.peerUid) return window.__le_lastPeer;
     if (typeof window.derivePeerAsync === "function") {
       const peer = await window.derivePeerAsync();
-      if (peer && peer.peerUid) return peer;
+      const freshPeer = rememberFreshPeer(peer);
+      if (freshPeer) return freshPeer;
     }
+  } catch (_) {}
+
+  try {
     if (typeof window.derivePeer === "function") {
       const peer = await window.derivePeer();
-      if (peer && peer.peerUid) return peer;
+      const freshPeer = rememberFreshPeer(peer);
+      if (freshPeer) return freshPeer;
     }
   } catch (_) {}
   return null;

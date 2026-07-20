@@ -595,56 +595,23 @@ try {
                   } catch (_) {}
                   if (!peer) {
                     try {
-                      const lt = (globalThis && globalThis.lite_tools) || window.lite_tools;
-                      const p0 = lt && typeof lt.getPeer === 'function' ? lt.getPeer() : null;
-                      if (p0 && matchHint(p0, hint)) peer = p0;
-                    } catch (_) {}
-                  }
-                  if (!peer) {
-                    try {
                       const app = (globalThis && globalThis.app) || window.app;
                       let c = app && (app.curAioData || app.mainAio);
                       if (!c) {
-                        const found = __le_findCurAioData(app);
-                        if (found && found.value) c = found.value;
-                      }
-                      if (!c) {
-                        const roots = __le_collectRoots();
-                        for (const root of roots) {
-                          try {
-                            const store = root && root.config && root.config.globalProperties && root.config.globalProperties.$store;
-                            const st = store && store.state;
-                            const candidates = [
-                              st && st.common_Aio && st.common_Aio.curAioData,
-                              st && st.aio_chatMsgArea && st.aio_chatMsgArea.curAioData,
-                              st && st.chat && st.chat.chatInfo,
-                              st && st.aio && st.aio.curAioData
-                            ];
-                            for (const it of candidates) { if (it) { c = it; break; } }
-                            if (c) break;
-                          } catch (_) {}
-                        }
+                        const root = app && app.__vue_app__;
+                        const store = root && root.config && root.config.globalProperties && root.config.globalProperties.$store;
+                        const st = store && store.state;
+                        const candidates = [
+                          st && st.common_Aio && st.common_Aio.curAioData,
+                          st && st.aio_chatMsgArea && st.aio_chatMsgArea.curAioData,
+                          st && st.chat && st.chat.chatInfo,
+                          st && st.aio && st.aio.curAioData,
+                          st && st.common && st.common.curPeer,
+                          st && st.msg && st.msg.currentPeer
+                        ];
+                        for (const it of candidates) { if (it) { c = it; break; } }
                       }
                       peer = __le_peerFrom(c);
-                      if (!peer) {
-                        const roots = __le_collectRoots();
-                        for (const r of roots) {
-                          peer = __le_bfsFindPeer(r);
-                          if (peer) break;
-                        }
-                      }
-                    } catch (_) {}
-                  }
-                  if (!peer) {
-                    try {
-                      const pc = window.__le_peer_cache || null;
-                      if (pc && matchHint(pc, hint)) peer = pc;
-                    } catch (_) {}
-                  }
-                  if (!peer && typeof window.derivePeer === 'function') {
-                    try {
-                      const p2 = await window.derivePeer();
-                      if (p2 && matchHint(p2, hint)) peer = p2;
                     } catch (_) {}
                   }
                   if (peer && peer.chatType && peer.peerUid) {
@@ -952,7 +919,7 @@ try { injectLEStylesOnce(); } catch (_) {}
 // === 插件运行所需的全局与辅助函数 ===
 let overlayInstance = null;
 let toolbarBtnRef = null;
-let injected = false;
+let injectCheckScheduled = false;
 const OBSERVER_INTERVAL = 1500;
 
 function parseHotkeyString(str) {
@@ -1945,19 +1912,7 @@ function derivePeer() {
     const cp = window.__le_curPeer;
     if (cp && matchHint(cp, hint)) return cp;
   } catch (_) {}
-  // 0) 最近缓存
-  try {
-    const lp = window.__le_lastPeer;
-    if (lp && matchHint(lp, hint)) return lp;
-  } catch (_) {}
-  // 1) lite_tools.getPeer（若可用）
-  try {
-    if (window.lite_tools && typeof window.lite_tools.getPeer === 'function') {
-      const p = window.lite_tools.getPeer();
-      if (p && matchHint(p, hint)) return p;
-    }
-  } catch (_) {}
-  // 2) window.app.curAioData / mainAio
+  // 1) window.app.curAioData / mainAio
   try {
     if (window.app) {
       const c = window.app.curAioData || window.app.mainAio;
@@ -1987,7 +1942,7 @@ function derivePeer() {
       }
     }
   } catch (_) {}
-  // 3) Vuex store 常见路径 (适配更多 store 结构)
+  // 2) 当前 app 绑定的 Vuex store 常见路径
   try {
     const root = window.app && window.app.__vue_app__;
     const store = root && root.config && root.config.globalProperties && root.config.globalProperties.$store;
@@ -2024,44 +1979,6 @@ function derivePeer() {
           const peer = { chatType: ct, peerUid: String(peerUid), guildId: c.guildId || '' };
           if (ct === 2 && groupCode) peer.groupCode = String(groupCode);
           return peer;
-        }
-      }
-    }
-  } catch (_) {}
-  // 4) 最近一次 sendMsg 捕获
-  try {
-    const ls = window.__le_lastSendMsg && window.__le_lastSendMsg.peer;
-    if (ls && ls.chatType && ls.peerUid) {
-      try { window.__le_lastPeer = ls; } catch (_) {}
-      return ls;
-    }
-  } catch (_) {}
-  // 5) 深度扫描 store 中的消息元素
-  try {
-    const arr = (typeof scanStoreForMsgElements === 'function') ? scanStoreForMsgElements(5) : [];
-    for (const r of arr) {
-      const p1 = r && r.peer;
-      if (p1 && p1.chatType && p1.peerUid) { try { window.__le_lastPeer = p1; } catch (_) {} return p1; }
-      const parent = r && r.parent;
-      if (parent && typeof parent === 'object') {
-        const cands = [parent.peer, parent.contact, parent.talker, parent.chat, parent.session, parent.target].filter(Boolean);
-        for (const c of cands) {
-          if (c && c.chatType && c.peerUid) { try { window.__le_lastPeer = c; } catch (_) {} return c; }
-        }
-        const chatType = parent.chatType || (parent.peer && parent.peer.chatType);
-        let groupCode = parent.groupCode || (parent.header && parent.header.groupCode) || (parent.peer && parent.peer.groupCode);
-        let peerUid = (parent.header && (parent.header.uid || parent.header.peerUid)) || (parent.peer && parent.peer.peerUid) || parent.peerUid || parent.groupCode;
-        let ct = Number(chatType);
-        if (groupCode && ct === 1) ct = 2;
-        if (ct === 2) {
-          if (!groupCode && peerUid) groupCode = peerUid;
-          if (groupCode) peerUid = groupCode;
-        }
-        if (Number.isFinite(ct) && peerUid) {
-          const pp = { chatType: ct, peerUid: String(peerUid) };
-          if (ct === 2 && groupCode) pp.groupCode = String(groupCode);
-          try { window.__le_lastPeer = pp; } catch (_) {}
-          return pp;
         }
       }
     }
@@ -3296,7 +3213,6 @@ function buildOverlay() {
     if (cards.length === 0) { activeIndex = -1; return; }
     if (activeIndex < 0 || activeIndex >= cards.length) activeIndex = 0;
     updateActiveClasses();
-    try { cards[activeIndex].scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
   }
   function moveActive(delta) {
     const cards = getCards();
@@ -3316,6 +3232,81 @@ function buildOverlay() {
     renderRecentGrid();
     renderGrid();
   });
+
+  async function handleEmoteActivation({ item, imageEl, event }) {
+    const filePath = item && (item.absPath || item.path);
+    if (!filePath) {
+      leShowToast('表情文件路径无效，操作已取消', 'error');
+      return false;
+    }
+
+    let sendMode = 'multi';
+    try {
+      const cfg = window.localEmote.getConfig ? window.localEmote.getConfig() : null;
+      if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode;
+    } catch (e) {
+      dbg('emote activation: read config error', e && e.message);
+    }
+
+    const isGif = /\.gif$/i.test(String(filePath));
+    const forceFace = sendMode === 'native' || !!event?.altKey || isGif;
+    const directSend = forceFace || sendMode === 'image';
+
+    if (directSend) {
+      const peer = await qqntAdapter.getCurrentPeer();
+      if (!peer) {
+        dbg('emote activation: no live peer, direct send blocked');
+        leShowToast('无法确认当前会话，已阻止发送', 'error');
+        return false;
+      }
+
+      try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
+      try {
+        const result = await qqntAdapter.sendImageMessage(peer, filePath, {
+          picSubType: forceFace ? 1 : 0,
+          asFace: forceFace,
+        });
+        if (result === false || (result && result.ok === false)) {
+          throw new Error((result && result.reason) || 'QQNT returned a failed result');
+        }
+        try { window.localEmote.markRecent?.(filePath); } catch (_) {}
+        try { overlayInstance?.hide?.(); } catch (_) {}
+        return true;
+      } catch (e) {
+        dbg('emote activation: direct send failed', e && e.message);
+        leShowToast('发送失败，已阻止降级发送', 'error');
+        return false;
+      }
+    }
+
+    const editor = getEditorEl();
+    if (!editor) {
+      dbg('emote activation: current editor missing, insert blocked');
+      leShowToast('找不到当前会话输入框，操作已取消', 'error');
+      return false;
+    }
+
+    try { editor.focus(); } catch (_) {}
+    try { ensureSelectionAtEditorEnd(editor); } catch (_) {}
+    let inserted = tryInsertImageToEditor(filePath);
+    if (!inserted) {
+      try {
+        const result = await window.localEmote.sendEmote(filePath, { mode: 'multi' });
+        inserted = !!(result && result.ok);
+      } catch (e) {
+        dbg('emote activation: clipboard insert failed', e && e.message);
+      }
+    }
+    if (!inserted) {
+      leShowToast('表情插入失败，未发送任何消息', 'error');
+      return false;
+    }
+
+    try { window.localEmote.markRecent?.(filePath); } catch (_) {}
+    try { editor.focus(); } catch (_) {}
+    try { await animateEmoteFlight(imageEl, editor); } catch (_) {}
+    return true;
+  }
 
   // 新增：渲染“历史表情”
   async function renderRecentGrid() {
@@ -3368,165 +3359,7 @@ function buildOverlay() {
         card.appendChild(img);
         if (name) card.appendChild(name);
         card.addEventListener('click', async (ev) => {
-          const p = it.absPath || it.path;
-          dbg('recent click:', p);
-          const isGif = /\.gif$/i.test(String(p || ''));
-          let inserted = false;
-          let sentOk = false;
-          let cfg = null;
-          let sendMode = 'multi';
-          try {
-            cfg = window.localEmote.getConfig ? window.localEmote.getConfig() : null;
-            if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode;
-          } catch (e) { dbg('recent click: read config error', e && e.message); }
-
-          // 尝试获取环境
-          let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-          let peer = await qqntAdapter.getCurrentPeer();
-          try { ensureSelectionAtEditorEnd(getEditorEl()); } catch (_) {}
-
-          // 判定是否必须走 Native：配置为native、按住Alt、或者文件是GIF
-          const needNative = (sendMode === 'native' || (ev && ev.altKey) || isGif);
-          const preferNative = (sendMode === 'image' && !isGif);
-
-          if ((needNative || preferNative) && (!lt || !peer)) {
-            // 重试机制：等待 peer 或 lt 就绪
-            try {
-              const end = Date.now() + 2000;
-              while (Date.now() < end) {
-                await new Promise(r => setTimeout(r, 100));
-                lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-                peer = await qqntAdapter.getCurrentPeer();
-                if ((lt || typeof window.leMainRequest === 'function') && peer) break;
-              }
-            } catch (_) {}
-          }
-
-          try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
-          
-          const canNative = !!(peer && (lt || typeof window.leMainRequest === 'function'));
-          dbg('recent click: needNative=', needNative, 'canNative=', canNative, 'peer=', peer);
-
-          if (needNative && !canNative) {
-            // 必须原生发送但环境缺失
-            dbg('recent click: native required but env missing');
-            alert('无法获取当前会话信息，请尝试切换会话或重启 QQ');
-            return;
-          }
-
-          if (needNative && canNative) {
-            dbg('recent click: native mode execute');
-            try {
-              // Standard/Native mode: picSubType=1, asFace=true
-              const picSubType = 1;
-              await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: true });
-              sentOk = true;
-              dbg('recent click: native send ok');
-              try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
-              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-              return;
-            } catch (e) {
-              sentOk = false;
-              dbg('recent click: native send error', e && e.message);
-            }
-            inserted = false;
-          } else if (preferNative && canNative) {
-            dbg('recent click: image mode native send');
-            try {
-              // Image mode: picSubType=0, asFace=false
-              const picSubType = 0;
-              await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: false });
-              sentOk = true;
-              dbg('recent click: image native send ok');
-              try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
-              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-              return;
-            } catch (e) {
-              sentOk = false;
-              dbg('recent click: image native send error', e && e.message);
-            }
-            inserted = false;
-          } else {
-            if (needNative && !canNative) {
-              dbg('recent click: native required but env missing');
-              // GIF 环境缺失，不得不降级，但大概率是静态图
-            }
-            dbg('recent click: multi/image mode or fallback');
-            inserted = tryInsertImageToEditor(p);
-            dbg('recent click: tryInsertImageToEditor first ret=', inserted);
-            if (inserted) { sentOk = true; }
-            if (!inserted) {
-              try {
-                const ed = getEditorEl(); try { ed && ed.focus(); } catch (_) {}
-                const res = await window.localEmote.sendEmote(p);
-                inserted = !!(res && res.ok);
-                sentOk = inserted;
-                dbg('recent click: sendEmote ret=', inserted);
-              } catch (e) { inserted = false; dbg('recent click: sendEmote error', e && e.message); }
-            }
-          }
-          try { if (sentOk) window.localEmote.markRecent(p); } catch (_) {}
-          // 仅非多发模式下快速发送；多发模式只插入到编辑器等待手动确认
-          const wantQuick = (sendMode !== 'multi');
-          dbg('recent click: wantQuick=', wantQuick, 'inserted=', inserted);
-          
-          if (wantQuick) {
-            // 将查找范围收敛到编辑器所在的对话容器，避免误点其他会话的“发送”
-            let scope = document;
-            let edRef = null;
-            try {
-              edRef = getEditorEl();
-              if (edRef) {
-                const candidate = edRef.closest('.message-input-area, .chat-input-area, .q-input-area, .container, [class*="input"], [class*="editor"], [class*="chat"], [class*="msg"], [class*="message"]');
-                if (candidate) scope = candidate;
-              }
-            } catch (_) {}
-            let sendBtn = findSendButton(scope) || findSendButton(document);
-            if (sendBtn && inserted) {
-              try { await animateEmoteFlight(img, sendBtn); } catch (_) {}
-              // 关闭面板，避免捕获回车导致再次点击卡片
-              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-              try {
-  // 更拟真的点击序列
-  sendBtn.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
-  sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-  sendBtn.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }));
-  sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-  sendBtn.click();
-  dbg('recent click: sendBtn clicked');
-} catch (_) {}
-            } else if (inserted && edRef) {
-              // 已插入内容：仅回车发送，避免重复粘贴
-              try { edRef.focus(); } catch (_) {}
-              // 关闭面板，避免捕获回车导致再次点击卡片
-              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-              const ok = pressEnterToSend(edRef);
-              dbg('recent click: pressEnterToSend ret=', ok, '(no re-paste)');
-            } else if (edRef) {
-              // 未插入成功：尝试使用剪贴板粘贴 + 回车进行兜底
-              try { edRef.focus(); } catch (_) {}
-              let pasted = false;
-              try {
-                const res2 = await window.localEmote.sendEmote(p);
-                pasted = !!(res2 && res2.ok);
-                dbg('recent click: sendEmote fallback ret=', pasted);
-              } catch (e) { dbg('recent click: sendEmote fallback error', e && e.message); }
-              // 关闭面板，避免捕获回车导致再次点击卡片
-              try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-              const ok = pressEnterToSend(edRef);
-              dbg('recent click: pressEnterToSend ret=', ok);
-            } else { dbg('recent click: sendBtn not ready or not inserted'); }
-          } else {
-            // 非快速发送（如多发模式），给出视觉反馈并聚焦编辑器，便于继续连点
-            try {
-              const edOnly = getEditorEl();
-              if (edOnly && inserted) {
-                try { edOnly.focus(); } catch (_) {}
-                try { await animateEmoteFlight(img, edOnly); } catch (_) {}
-                dbg('recent click: inserted (multi), focused editor');
-              }
-            } catch (_) {}
-          }
+          await handleEmoteActivation({ item: it, imageEl: img, event: ev });
         });
         recentGrid.appendChild(card);
       }
@@ -3595,161 +3428,7 @@ function buildOverlay() {
             ev.stopPropagation();
             return;
           }
-        const p = it.absPath || it.path;
-        dbg('grid click:', p, 'mode=', (window.localEmote.getConfig && window.localEmote.getConfig().sendMode));
-        const isGif = /\.gif$/i.test(String(p || ''));
-        let inserted = false;
-        let sentOk = false;
-        // 依据发送模式处理：点击即发。优先原生（保真），否则走 image 自动发送
-        let cfg = null;
-        let sendMode = 'multi';
-        try { cfg = window.localEmote.getConfig ? window.localEmote.getConfig() : null; if (cfg && typeof cfg.sendMode === 'string') sendMode = cfg.sendMode; } catch (e) { dbg('grid click: read config error', e && e.message); }
-        
-        // 尝试获取环境
-        let lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-        let peer = await qqntAdapter.getCurrentPeer();
-
-        // 判定是否必须走 Native
-        const needNative = (sendMode === 'native' || (ev && ev.altKey) || isGif);
-        const preferNative = (sendMode === 'image' && !isGif);
-
-        if ((needNative || preferNative) && (!lt || !peer)) {
-          // 重试机制：等待 peer 或 lt 就绪
-          try {
-            const end = Date.now() + 2000;
-            while (Date.now() < end) {
-              await new Promise(r => setTimeout(r, 100));
-              lt = (globalThis && globalThis.lite_tools) || window.lite_tools || null;
-              peer = await qqntAdapter.getCurrentPeer();
-              if ((lt || typeof window.leMainRequest === 'function') && peer) break;
-            }
-          } catch (_) {}
-        }
-
-        try { ensureLESendMsgDebugHookInstalled && ensureLESendMsgDebugHookInstalled(); } catch (_) {}
-        
-        const canNative = !!(peer && (lt || typeof window.leMainRequest === 'function'));
-        dbg('grid click: needNative=', needNative, 'canNative=', canNative, 'peer=', peer);
-
-        if (needNative && !canNative) {
-          // 必须原生发送但环境缺失：提示用户而不是静默失败
-          dbg('grid click: native required but env missing (no peer or lite_tools)');
-          alert('无法获取当前会话信息，请尝试切换会话或重启 QQ');
-          return; 
-        }
-
-        if (needNative && canNative) {
-          dbg('grid click: native mode execute');
-          try {
-            // Standard/Native mode: picSubType=1 (local file), asFace=true
-            const picSubType = 1;
-            await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: true });
-            sentOk = true;
-            dbg('grid click: native send ok');
-            try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            return;
-          } catch (e) {
-            sentOk = false;
-            dbg('grid click: native send error', e && e.message);
-          }
-          inserted = false;
-        } else if (preferNative && canNative) {
-          dbg('grid click: image mode native send');
-          try {
-            // Image mode: picSubType=0 (local file), asFace=false
-            const picSubType = 0;
-            await qqntAdapter.sendImageMessage(peer, p, { picSubType, asFace: false });
-            sentOk = true;
-            dbg('grid click: image native send ok');
-            try { if (window.localEmote && window.localEmote.markRecent) window.localEmote.markRecent(p); } catch (_) {}
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            return;
-          } catch (e) {
-            sentOk = false;
-            dbg('grid click: image native send error', e && e.message);
-          }
-          inserted = false;
-        } else {
-          if (needNative && !canNative) {
-            dbg('grid click: native required but env missing');
-          }
-          inserted = tryInsertImageToEditor(p);
-          dbg('grid click: tryInsertImageToEditor first ret=', inserted);
-          if (inserted) { sentOk = true; }
-          if (!inserted) {
-            try {
-              const ed = getEditorEl(); try { ed && ed.focus(); } catch (_) {}
-              const res = await window.localEmote.sendEmote(p);
-              inserted = !!(res && res.ok);
-              sentOk = inserted;
-              dbg('grid click: sendEmote ret=', inserted);
-            } catch (_) { inserted = false; }
-          }
-        }
-        try { if (sentOk) window.localEmote.markRecent(p); } catch (_) {}
-        // 仅非多发模式下快速发送；多发模式只插入到编辑器等待手动确认
-        const wantQuick = (sendMode !== 'multi');
-        dbg('grid click: wantQuick=', wantQuick, 'inserted=', inserted);
-        
-        if (wantQuick) {
-          // 将查找范围收敛到编辑器所在的对话容器，避免误点其他会话的“发送”
-          let scope = document;
-          let edRef = null;
-          try {
-            edRef = getEditorEl();
-            if (edRef) {
-              // 以包含编辑器、输入工具条或消息列表的最近容器作为查找范围
-              const candidate = edRef.closest('.message-input-area, .chat-input-area, .q-input-area, .container, [class*="input"], [class*="editor"], [class*="chat"], [class*="msg"], [class*="message"]');
-              if (candidate) scope = candidate;
-            }
-          } catch (_) {}
-          let sendBtn = findSendButton(scope) || findSendButton(document);
-          if (sendBtn && inserted) {
-            try { await animateEmoteFlight(img, sendBtn); } catch (_) {}
-            // 关闭面板，避免捕获回车导致再次点击卡片
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            try {
-  // 更拟真的点击序列
-  sendBtn.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
-  sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-  sendBtn.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }));
-  sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-  sendBtn.click();
-  dbg('grid click: sendBtn clicked');
-} catch (_) {}
-          } else if (inserted && edRef) {
-            // 已插入内容：仅回车发送，避免重复粘贴
-            try { edRef.focus(); } catch (_) {}
-            // 关闭面板，避免捕获回车导致再次点击卡片
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            const ok = pressEnterToSend(edRef);
-            dbg('grid click: pressEnterToSend ret=', ok, '(no re-paste)');
-          } else if (edRef) {
-            // 未插入成功：尝试使用剪贴板粘贴 + 回车进行兜底
-            try { edRef.focus(); } catch (_) {}
-            let pasted = false;
-            try {
-              const res2 = await window.localEmote.sendEmote(p);
-              pasted = !!(res2 && res2.ok);
-              dbg('grid click: sendEmote fallback ret=', pasted);
-            } catch (e) { dbg('grid click: sendEmote fallback error', e && e.message); }
-            // 关闭面板，避免捕获回车导致再次点击卡片
-            try { overlayInstance && overlayInstance.hide && overlayInstance.hide(); } catch (_) {}
-            const ok = pressEnterToSend(edRef);
-            dbg('grid click: pressEnterToSend ret=', ok);
-          } else { dbg('grid click: sendBtn not ready or not inserted'); }
-        } else {
-          // 非快速发送（如多发模式），给出视觉反馈并聚焦编辑器，便于继续连点
-          try {
-            const edOnly = getEditorEl();
-            if (edOnly && inserted) {
-              try { edOnly.focus(); } catch (_) {}
-              try { await animateEmoteFlight(img, edOnly); } catch (_) {}
-              dbg('grid click: inserted (multi), focused editor');
-            }
-          } catch (_) {}
-        }
+          await handleEmoteActivation({ item: it, imageEl: img, event: ev });
         });
         grid.appendChild(card);
       }
@@ -3902,6 +3581,7 @@ function buildOverlay() {
       await renderGrid();
       updateMainTitle();
       applyActiveAfterRender();
+      scroll.scrollTop = 0;
       dbg('show overlay: done');
     })();
     try { await showPromise; } finally {
@@ -3978,24 +3658,42 @@ function buildOverlay() {
   return { show, hide, el: wrap, refresh };
 }
 
+function findActiveChatFuncBar() {
+  const preferred = Array.from(document.querySelectorAll('.chat-input-area .chat-func-bar'));
+  const fallback = Array.from(document.querySelectorAll('.chat-func-bar'));
+  const candidates = preferred.concat(fallback.filter((item) => !preferred.includes(item)));
+  return candidates.find((item) => item?.isConnected && isVisible(item)) || null;
+}
+
 function injectButton() {
   dbg('injectButton: start');
-  // 对齐 deepl_plugin：优先将按钮放到聊天功能栏左侧（.chat-func-bar 的第一个子元素）
-  const chatBar = document.querySelector('.chat-func-bar');
+  const chatBar = findActiveChatFuncBar();
   const leftIcons = chatBar && chatBar.firstElementChild ? chatBar.firstElementChild : null;
-  
-  // 如果按钮已存在，且发现了正确的容器，则迁移到左侧功能区
-  const existed = document.getElementById('local-emote-toolbar-btn');
-  if (existed && leftIcons && existed.parentElement !== leftIcons) {
-    try { leftIcons.appendChild(existed); dbg('injectButton: moved existed to leftIcons'); } catch (_) {}
+
+  const buttons = Array.from(document.querySelectorAll('#local-emote-toolbar-btn'));
+  const existed = buttons.shift() || null;
+  for (const duplicate of buttons) {
+    try { duplicate.remove(); } catch (_) {}
+  }
+
+  if (!leftIcons) {
+    if (!toolbarBtnRef?.isConnected) toolbarBtnRef = existed?.isConnected ? existed : null;
+    try { overlayInstance?.hide?.(); } catch (_) {}
+    dbg('injectButton: active leftIcons not found, wait');
+    return false;
+  }
+
+  if (existed) {
+    if (existed.parentElement !== leftIcons) {
+      try {
+        leftIcons.appendChild(existed);
+        overlayInstance?.hide?.();
+        dbg('injectButton: moved existing button to active toolbar');
+      } catch (_) {}
+    }
+    toolbarBtnRef = existed;
     return true;
   }
-  
-  // 仅当找到左侧功能区时才注入，未找到则等待下次观察
-  if (!leftIcons) { dbg('injectButton: leftIcons not found, wait'); return false; }
-  
-  // 若已存在按钮，直接返回
-  if (document.getElementById('local-emote-toolbar-btn')) { dbg('injectButton: already exists'); return true; }
   
   const btn = document.createElement('button');
   btn.id = 'local-emote-toolbar-btn';
@@ -4017,8 +3715,8 @@ function injectButton() {
   const svg = createIconSvg();
   btn.appendChild(svg);
   
-  const overlay = buildOverlay();
-  dbg('injectButton: overlay built');
+  const overlay = overlayInstance?.el?.isConnected ? overlayInstance : buildOverlay();
+  dbg('injectButton: overlay ready');
   overlayInstance = overlay;
   toolbarBtnRef = btn;
   
@@ -4039,12 +3737,21 @@ function injectButton() {
 document.addEventListener('keydown', onGlobalKeydown, true);
 try { installGlobalSelectionGuard(); } catch (_) {}
 
-// 首次尝试注入
 const tryInject = () => {
-  if (injected) { dbg('tryInject: already injected, skip'); return; }
-  injected = injectButton();
-  dbg('tryInject: result', injected);
+  const ready = injectButton();
+  dbg('tryInject: result', ready);
 };
+
+function scheduleInjectCheck() {
+  if (injectCheckScheduled) return;
+  injectCheckScheduled = true;
+  const run = () => {
+    injectCheckScheduled = false;
+    tryInject();
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 0);
+}
 
 const leContextMenuState = { lastImageSource: "", lastTs: 0 };
 const leContextPointerState = { x: 0, y: 0, ts: 0 };
@@ -4471,11 +4178,9 @@ function leCreateContextSubMenu(parentEl, menuItems, callback, level = 0, theme 
     }
 
     leBindContextActivate(subMenuItemEl, (event) => {
-      event.stopPropagation();
+      const qContextMenu = document.querySelector(".q-context-menu");
       callback(event, menuData);
-      leClearAllSubMenuTimers();
-      leRemoveAllSubMenus();
-      document.querySelector(".q-context-menu")?.remove();
+      leFinishContextMenuActivation(qContextMenu);
     });
     scrollEl.appendChild(subMenuItemEl);
   });
@@ -4677,11 +4382,9 @@ function leCreateNestedSubMenu(parentEl, menuItems, callback, level = 0) {
       });
     }
     leBindContextActivate(subMenuItemEl, (event) => {
-      event.stopPropagation();
+      const qContextMenu = document.querySelector(".q-context-menu");
       callback(event, menuData);
-      leSubMenuTimers.clear();
-      leRemoveAllSubMenus();
-      document.querySelector(".q-context-menu")?.remove();
+      leFinishContextMenuActivation(qContextMenu);
     });
     scrollEl.appendChild(subMenuItemEl);
   });
@@ -4777,8 +4480,35 @@ function leShowToast(content, type, duration = 3000) {
   return toast;
 }
 
+function leDismissQQNTContextMenu(qContextMenu) {
+  const dispatchOutsideClick = () => {
+    if (!qContextMenu?.isConnected) return;
+    const target = document.documentElement || document.body;
+    if (!target?.dispatchEvent) return;
+    try {
+      target.dispatchEvent(new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+      }));
+    } catch (_) {
+      try { target.click?.(); } catch (_) {}
+    }
+  };
+  if (typeof queueMicrotask === "function") queueMicrotask(dispatchOutsideClick);
+  else Promise.resolve().then(dispatchOutsideClick);
+}
+
+function leFinishContextMenuActivation(qContextMenu) {
+  leClearAllSubMenuTimers();
+  leRemoveAllSubMenus();
+  leDismissQQNTContextMenu(qContextMenu);
+}
+
 function leBindContextActivate(el, handler) {
   if (!el || typeof handler !== "function") return;
+  let fallbackTimer = null;
   const onActivate = (event) => {
     if (event && event.__le_handled) return;
     if (event) event.__le_handled = true;
@@ -4787,9 +4517,25 @@ function leBindContextActivate(el, handler) {
     el.__le_lastFire = now;
     handler(event);
   };
-  el.addEventListener("pointerdown", onActivate, true);
-  el.addEventListener("mousedown", onActivate, true);
-  el.addEventListener("click", onActivate, true);
+  const clearFallback = () => {
+    if (fallbackTimer === null) return;
+    clearTimeout(fallbackTimer);
+    fallbackTimer = null;
+  };
+  const scheduleFallback = (event) => {
+    if (fallbackTimer !== null) return;
+    fallbackTimer = setTimeout(() => {
+      fallbackTimer = null;
+      onActivate(event);
+    }, 400);
+  };
+  const onClick = (event) => {
+    clearFallback();
+    onActivate(event);
+  };
+  el.addEventListener("pointerdown", scheduleFallback, true);
+  el.addEventListener("mousedown", scheduleFallback, true);
+  el.addEventListener("click", onClick, true);
 }
 
 function leCreateContextItemFallback(title) {
@@ -4887,11 +4633,8 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
   } else if (typeof callback === "function") {
     // No submenu, always click
     leBindContextActivate(contextItem, (event) => {
-      event.stopPropagation();
       callback(event);
-      leClearAllSubMenuTimers();
-      leRemoveAllSubMenus();
-      qContextMenu.remove();
+      leFinishContextMenuActivation(qContextMenu);
     });
     qContextMenu.appendChild(contextItem);
     return;
@@ -4900,11 +4643,8 @@ function leAddQContextMenu(qContextMenu, title, subMenuList, callback, allowMain
   // If submenu exists, only add click listener if allowMainClick is true
   if (callback && (!hasSubMenu || allowMainClick)) {
     leBindContextActivate(contextItem, (e) => {
-      e.stopPropagation();
       callback(e);
-      leClearAllSubMenuTimers();
-      leRemoveAllSubMenus();
-      qContextMenu.remove();
+      leFinishContextMenuActivation(qContextMenu);
     });
   }
   
@@ -5254,8 +4994,8 @@ function leInstallImageContextMenu() {
 if (window.localEmote && typeof window.localEmote.onUpdatePeer === 'function') {
   window.localEmote.onUpdatePeer((peer) => {
     if (peer && peer.peerUid && peer.chatType) {
-      window.__le_lastPeer = peer;
-      try { dbg('onUpdatePeer: updated from main', peer); } catch (_) {}
+      window.__le_observedPeer = peer;
+      try { dbg('onUpdatePeer: observed from main', peer); } catch (_) {}
     }
   });
 }
@@ -5264,11 +5004,11 @@ tryInject();
 try { leInstallImageContextMenu(); } catch (_) {}
 
 // 监听 DOM 变化，确保路由切换后依然注入
-const mo = new MutationObserver(() => tryInject());
+const mo = new MutationObserver(scheduleInjectCheck);
 mo.observe(document.documentElement, { childList: true, subtree: true });
 
 // 兜底定时器（防止某些页面结构延迟加载）
-setInterval(tryInject, OBSERVER_INTERVAL);
+setInterval(scheduleInjectCheck, OBSERVER_INTERVAL);
 // 移除多余的闭包结束
 
 export const onSettingWindowCreated = (view) => {

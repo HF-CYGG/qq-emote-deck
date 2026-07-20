@@ -4,7 +4,7 @@
   "name": "QQ Emote Deck（本地表情）",
   "slug": "local_emotes",
   "description": "在 QQNT 中管理、预览与发送本地表情包",
-  "version": "0.4.0",
+  "version": "0.4.3",
   "icon": "./assets/icon.svg",
   "thumb": "./assets/icon.svg",
   "authors": [
