@@ -3248,8 +3248,7 @@ function buildOverlay() {
       dbg('emote activation: read config error', e && e.message);
     }
 
-    const isGif = /\.gif$/i.test(String(filePath));
-    const forceFace = sendMode === 'native' || !!event?.altKey || isGif;
+    const forceFace = sendMode === 'native' || !!event?.altKey;
     const directSend = forceFace || sendMode === 'image';
 
     if (directSend) {
@@ -3286,16 +3285,25 @@ function buildOverlay() {
       return false;
     }
 
-    try { editor.focus(); } catch (_) {}
-    try { ensureSelectionAtEditorEnd(editor); } catch (_) {}
-    let inserted = tryInsertImageToEditor(filePath);
-    if (!inserted) {
-      try {
-        const result = await window.localEmote.sendEmote(filePath, { mode: 'multi' });
-        inserted = !!(result && result.ok);
-      } catch (e) {
-        dbg('emote activation: clipboard insert failed', e && e.message);
+    let inserted = false;
+    try {
+      if (!editor.isContentEditable || !ensureSelectionAtEditorEnd(editor) || document.activeElement !== editor) {
+        leShowToast('无法聚焦当前聊天输入框', 'error');
+        return false;
       }
+      const before = editor.innerHTML;
+      const result = await window.localEmote.sendEmote(filePath, { mode: 'multi' });
+      if (result?.ok) {
+        for (let attempt = 0; attempt < 25 && editor.isConnected; attempt++) {
+          if (editor.innerHTML !== before && editor.querySelector('img, video, [data-attachment-id]')) {
+            inserted = true;
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 60));
+        }
+      }
+    } catch (e) {
+      dbg('emote activation: clipboard insert failed', e && e.message);
     }
     if (!inserted) {
       leShowToast('表情插入失败，未发送任何消息', 'error');

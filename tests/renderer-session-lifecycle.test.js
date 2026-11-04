@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
 
-function createActivationHarness({ mode, peer = null, directError = null, editor = null } = {}) {
+function createActivationHarness({ mode, peer = null, directError = null, editor = null, pasteAddsImage = true } = {}) {
   const start = renderer.indexOf("async function handleEmoteActivation");
   const end = renderer.indexOf("// 新增：渲染“历史表情”", start);
   assert.ok(start >= 0 && end > start, "shared activation handler source should be extractable");
@@ -14,10 +14,16 @@ function createActivationHarness({ mode, peer = null, directError = null, editor
   const calls = { direct: 0, clipboard: 0, toasts: [] };
   const context = {
     calls,
+    document: { activeElement: editor },
+    setTimeout(callback) { callback(); },
     window: {
       localEmote: {
         getConfig() { return { sendMode: mode }; },
-        async sendEmote() { calls.clipboard += 1; return { ok: true }; },
+        async sendEmote() {
+          calls.clipboard += 1;
+          if (editor && pasteAddsImage) editor.innerHTML = '<img>';
+          return { ok: true };
+        },
         markRecent() {},
       },
     },
@@ -30,8 +36,7 @@ function createActivationHarness({ mode, peer = null, directError = null, editor
       },
     },
     getEditorEl() { return editor; },
-    tryInsertImageToEditor() { return false; },
-    ensureSelectionAtEditorEnd() {},
+    ensureSelectionAtEditorEnd() { return true; },
     ensureLESendMsgDebugHookInstalled() {},
     async animateEmoteFlight() {},
     leShowToast(message) { calls.toasts.push(message); },
@@ -54,7 +59,7 @@ test("IPC peer updates are observations and cannot replace the current send targ
 
 test("live peer derivation excludes stale message and unscoped peer caches", () => {
   const derivePeerBody = renderer.match(
-    /function\s+derivePeer\(\)\s*\{([\s\S]*?)\n\}\ntry\s*\{\s*window\.derivePeer\s*=\s*derivePeer;/
+    /function\s+derivePeer\(\)\s*\{([\s\S]*?)\n\}\s*(?:\/\/[^\n]*\n\s*)*try\s*\{\s*window\.derivePeer\s*=\s*derivePeer;/
   );
 
   assert.ok(derivePeerBody, "derivePeer implementation should be present");
@@ -108,6 +113,24 @@ test("multi mode does not invoke clipboard insertion when the current editor is 
   assert.equal(await handler({ item: { path: "D:\\emotes\\cat.png" }, imageEl: null, event: {} }), false);
   assert.equal(calls.direct, 0);
   assert.equal(calls.clipboard, 0);
+});
+
+test("multi mode uses QQ paste for PNG and GIF without direct sending", async () => {
+  for (const ext of ["png", "gif"]) {
+    const editor = { isConnected: true, isContentEditable: true, innerHTML: "", focus() {}, querySelector() { return this.innerHTML === '<img>'; } };
+    const { calls, handler } = createActivationHarness({ mode: "multi", editor });
+    assert.equal(await handler({ item: { path: `D:\\emotes\\cat.${ext}` }, event: {} }), true);
+    assert.equal(calls.clipboard, 1);
+    assert.equal(calls.direct, 0);
+  }
+});
+
+test("a paste request that leaves the editor unchanged is reported as a failure", async () => {
+  const editor = { isConnected: true, isContentEditable: true, innerHTML: "", querySelector() { return null; } };
+  const { calls, handler } = createActivationHarness({ mode: "multi", editor, pasteAddsImage: false });
+  assert.equal(await handler({ item: { path: "D:\\emotes\\cat.png" }, event: {} }), false);
+  assert.equal(calls.clipboard, 1);
+  assert.equal(calls.toasts.length, 1);
 });
 
 test("toolbar reconciliation is DOM-driven and mutation checks are frame-coalesced", () => {

@@ -1,4 +1,5 @@
-const { app, dialog, ipcMain, clipboard, nativeImage, BrowserWindow } = require("electron");
+const { app, dialog, ipcMain, clipboard, nativeImage } = require("electron");
+const { execFile } = require("node:child_process");
 const fs = require("fs");
 const fsp = require("fs").promises;
 const path = require("path");
@@ -905,66 +906,50 @@ ipcMain.handle("localEmote:selectRootDir", async () => {
   }
 });
 
-// IPC: 发送表情（从文件写入剪贴板并尝试在当前窗口执行粘贴）
-ipcMain.handle("localEmote:send", async (e, filePath) => {
-  try {
-    // 尝试写入文件到剪贴板 (Windows CF_HDROP)，以支持 GIF 动图
-    if (process.platform === 'win32') {
-      try {
-        // DROPFILES structure: pFiles (DWORD), pt (POINT), fNC (BOOL), fWide (BOOL)
-        // pFiles = 20 (offset), fWide = 1 (Unicode)
-        const paths = filePath + '\0\0';
-        const pathsBuf = Buffer.from(paths, 'ucs2');
-        const dropFiles = Buffer.alloc(20 + pathsBuf.length);
-        dropFiles.writeUInt32LE(20, 0); // pFiles
-        dropFiles.writeUInt32LE(0, 4);  // pt.x
-        dropFiles.writeUInt32LE(0, 8);  // pt.y
-        dropFiles.writeUInt32LE(0, 12); // fNC
-        dropFiles.writeUInt32LE(1, 16); // fWide
-        pathsBuf.copy(dropFiles, 20);
-        clipboard.writeBuffer('CF_HDROP', dropFiles);
-        
-        // 同时写入图片数据，作为兼容兜底（某些应用可能只读图片）
-        // 但 QQNT 优先读取文件列表，这样能正确发送 GIF
-        const img = nativeImage.createFromPath(String(filePath || ""));
-        if (img && !img.isEmpty()) {
-           clipboard.write({ image: img, buffer: dropFiles, format: 'CF_HDROP' });
-        } else {
-           clipboard.writeBuffer('CF_HDROP', dropFiles);
-        }
-        
-        const wc = e && e.sender;
-        if (wc && !wc.isDestroyed()) {
-          try { wc.paste(); } catch (_) {}
-          return { ok: true, path: filePath, method: "clipboard-file" };
-        }
-        const win = BrowserWindow.getFocusedWindow();
-        if (win && win.webContents && !win.webContents.isDestroyed()) {
-          try { win.webContents.paste(); } catch (_) {}
-          return { ok: true, path: filePath, method: "clipboard-file" };
-        }
-        return { ok: false, path: filePath, reason: "no_target" };
-      } catch (err) {
-        log("send via CF_HDROP failed, fallback to image", err?.message || err);
-      }
-    }
+// Use the real Windows file-drop clipboard format for animated images.
+const setFileDropClipboard = Buffer.from(`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$files = New-Object System.Collections.Specialized.StringCollection
+[void]$files.Add($env:QQ_EMOTE_CLIPBOARD_PATH)
+[Windows.Forms.Clipboard]::SetFileDropList($files)
+`, 'utf16le').toString('base64');
+let pastePending = false;
 
-    const img = nativeImage.createFromPath(String(filePath || ""));
-    if (!img || img.isEmpty()) return { ok: false, path: filePath, reason: "bad_image" };
-    clipboard.writeImage(img);
-    const wc = e && e.sender;
-    if (wc && !wc.isDestroyed()) {
-      try { wc.paste(); } catch (_) {}
-      return { ok: true, path: filePath, method: "clipboard-paste" };
+ipcMain.handle("localEmote:send", async (event, filePath) => {
+  const target = event.sender;
+  const canPaste = () => !target.isDestroyed() && target.isFocused();
+  if (pastePending || !canPaste()) return { ok: false, reason: "editor_not_ready" };
+  if (typeof filePath !== "string" || !path.isAbsolute(filePath)) return { ok: false, reason: "invalid_path" };
+  pastePending = true;
+  try {
+    const fullPath = path.normalize(filePath);
+    const index = await getLibraryIndex();
+    if (!index.images.some(item => path.normalize(item.path) === fullPath)) {
+      return { ok: false, reason: "outside_library" };
     }
-    const win = BrowserWindow.getFocusedWindow();
-    if (win && win.webContents && !win.webContents.isDestroyed()) {
-      try { win.webContents.paste(); } catch (_) {}
-      return { ok: true, path: filePath, method: "clipboard-paste" };
+    if (!canPaste()) return { ok: false, reason: "editor_not_ready" };
+    const image = nativeImage.createFromPath(fullPath);
+    if (process.platform === 'win32' && (/\.gif$/i.test(fullPath) || image.isEmpty())) {
+      const windowsPowerShell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      await new Promise((resolve, reject) => {
+        execFile(windowsPowerShell, ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', setFileDropClipboard], {
+          env: { ...process.env, QQ_EMOTE_CLIPBOARD_PATH: fullPath },
+          timeout: 5000,
+          windowsHide: true,
+        }, error => error ? reject(error) : resolve());
+      });
+    } else {
+      if (image.isEmpty()) return { ok: false, reason: "bad_image" };
+      clipboard.writeImage(image);
     }
-    return { ok: false, path: filePath, reason: "no_target" };
-  } catch (e2) {
-    log("send error", filePath, e2?.message || e2);
-    return { ok: false, path: filePath };
+    if (!canPaste()) return { ok: false, reason: "editor_not_ready" };
+    target.paste();
+    return { ok: true };
+  } catch (error) {
+    log('emote paste failed', error?.message || error);
+    return { ok: false, reason: "paste_failed" };
+  } finally {
+    pastePending = false;
   }
 });
